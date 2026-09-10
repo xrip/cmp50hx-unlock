@@ -1,0 +1,202 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Skip publishing a GitHub release (build only)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  # -----------------------------------------------------------------
+  # Linux build — produces a self-extracting .run that downloads a
+  # precompiled release tarball and runs install.sh (apt deps,
+  # patched 610.43.03 module build, EFI deploy, post-install verify).
+  # -----------------------------------------------------------------
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vendor (toolchain + NVIDIA source)
+        uses: actions/cache@v4
+        with:
+          path: |
+            efi-unlock/blobs
+            cache/610.43.03.tar.gz
+            cache/NVIDIA-Linux-x86_64-610.43.03.run
+          key: vendor-610.43.03-${{ hashFiles('patches/cmp50hx/01-cmp50-stockflow.patch', 'efi-unlock/build.sh') }}
+          restore-keys: |
+            vendor-610.43.03-
+
+      - name: Build patched 610.43.03 module + EFI binary
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p cache artifacts
+          # build.sh compiles and populates the vendor cache on first run;
+          # never installs, never touches initramfs, no root needed.
+          sudo apt-get install -y build-essential gnu-efi
+          ./build.sh --source-tarball cache/610.43.03.tar.gz \
+                     --artifacts-dir artifacts \
+                     --card cmp50hx
+          ( cd efi-unlock && ./build.sh )
+          ls -la artifacts/*/*/nvidia.ko 2>/dev/null | head
+          ls -la efi-unlock/50HXUNLK.EFI
+
+      - name: Compose Linux release payload (tar.gz)
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          STAGE=artifacts/linux-stage
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp install.sh                                              $STAGE/
+          cp -r efi-unlock/blobs                                      $STAGE/blobs
+          cp efi-unlock/README.md efi-unlock/unlock50x_v1.c            $STAGE/
+          cp efi-unlock/build.sh                                      $STAGE/
+          cp efi-unlock/50HXUNLK.EFI                                  $STAGE/
+          sha256sum efi-unlock/50HXUNLK.EFI                           > $STAGE/50HXUNLK.EFI.sha256
+          tar -C "$STAGE" -czf cmp50hx-unlock-linux.tar.gz .
+          sha256sum cmp50hx-unlock-linux.tar.gz > cmp50hx-unlock-linux.tar.gz.sha256
+          ls -la cmp50hx-unlock-linux.tar.gz*
+
+      - name: Build one-click Linux installer (.run)
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          CMP_RELEASE_URL="https://github.com/${{ github.repository }}/releases/latest/download/cmp50hx-unlock-linux.tar.gz" \
+          CMP_RELEASE_SHA=$(awk '{print $1}' cmp50hx-unlock-linux.tar.gz.sha256) \
+          CMP_VERSION="${GITHUB_REF_NAME:-dev}" \
+            bash tools/build-linux-installer.sh \
+              --tar cmp50hx-unlock-linux.tar.gz \
+              --out cmp50hx-unlock-linux.run
+          ls -la cmp50hx-unlock-linux.run
+
+      - name: Smoke-test the .run (dry-run, no install)
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          head -1 cmp50hx-unlock-linux.run | grep -q '^#!' || (echo "missing shebang" && exit 1)
+          cmp50hx-unlock-linux.run --self-check
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmp50hx-unlock-linux
+          path: |
+            cmp50hx-unlock-linux.run
+            cmp50hx-unlock-linux.tar.gz
+            cmp50hx-unlock-linux.tar.gz.sha256
+
+  # -----------------------------------------------------------------
+  # Windows build — produces a ZIP with the three Go exes + the
+  # embedded EFI + the BYOVD Gen2 runtime. User double-clicks
+  # 50HXInstaller.exe to install (per efi-unlock-windows/README.md).
+  # -----------------------------------------------------------------
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build 50HXInstaller / 50HXUninstaller / 50HXCheck
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cd "$env:GITHUB_WORKSPACE"
+          New-Item -ItemType Directory -Force -Path artifacts\windows-stage | Out-Null
+          # 1. winres_gen → rsrc_windows_amd64.syso
+          Push-Location tools\winres_gen
+          go build -o ..\..\artifacts\windows-stage\winres_gen.exe .
+          Pop-Location
+          ./artifacts/windows-stage/winres_gen.exe -o tools\inst50hx\rsrc_windows_amd64.syso
+          # 2. three Go tools (the existing -ldflags="-H=windowsgui -s -w" cmdline)
+          Push-Location tools\inst50hx
+          go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o ..\..\artifacts\windows-stage\50HXInstaller.exe .
+          Pop-Location
+          Push-Location tools\uninstall50x
+          go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o ..\..\artifacts\windows-stage\50HXUninstaller.exe .
+          Pop-Location
+          Push-Location tools\check50x
+          go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o ..\..\artifacts\windows-stage\50HXCheck.exe .
+          Pop-Location
+          Copy-Item gen2\* -Destination artifacts\windows-stage\ -Recurse -Force
+          Copy-Item efi-unlock-windows\README.md -Destination artifacts\windows-stage\README.md
+          Copy-Item CMP40HX-Unlock\LICENSE -Destination artifacts\windows-stage\LICENSE -ErrorAction SilentlyContinue
+          Copy-Item LICENSE -Destination artifacts\windows-stage\repo-LICENSE -ErrorAction SilentlyContinue
+          Get-ChildItem artifacts\windows-stage
+          $hash = (Get-FileHash artifacts\windows-stage\50HXInstaller.exe -Algorithm SHA256).Hash
+          Write-Output "50HXInstaller.exe sha256: $hash"
+
+      - name: Compose Windows ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cd "$env:GITHUB_WORKSPACE"
+          if (Test-Path cmp50hx-unlock-windows.zip) { Remove-Item cmp50hx-unlock-windows.zip }
+          Compress-Archive -Path artifacts\windows-stage\* -DestinationPath cmp50hx-unlock-windows.zip -CompressionLevel Optimal
+          (Get-FileHash cmp50hx-unlock-windows.zip -Algorithm SHA256).Hash | Tee-Object -FilePath cmp50hx-unlock-windows.zip.sha256
+          Get-Item cmp50hx-unlock-windows.zip, cmp50hx-unlock-windows.zip.sha256 | Format-Table Name,Length
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmp50hx-unlock-windows
+          path: |
+            cmp50hx-unlock-windows.zip
+            cmp50hx-unlock-windows.zip.sha256
+
+  # -----------------------------------------------------------------
+  # Publish release (only on tag push, unless dry_run)
+  # -----------------------------------------------------------------
+  release:
+    needs: [linux, windows]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cmp50hx-unlock-linux
+          path: dist/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: cmp50hx-unlock-windows
+          path: dist/windows
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "CMP 50HX unlock ${{ github.ref_name }}"
+          body: |
+            One-click installer for the CMP 50HX (TU102, 10de:1e09):
+
+            **Linux** — download `cmp50hx-unlock-linux.run`, then:
+            ```bash
+            chmod +x cmp50hx-unlock-linux.run
+            sudo ./cmp50hx-unlock-linux.run
+            ```
+
+            **Windows** — download `cmp50hx-unlock-windows.zip`, unzip, then:
+            * right-click `50HXInstaller.exe` → Run as administrator → Install
+
+            Files:
+            * `cmp50hx-unlock-linux.run` — self-extracting installer (kernel module + EFI + config)
+            * `cmp50hx-unlock-linux.tar.gz` — raw payload (for inspection / manual install)
+            * `cmp50hx-unlock-windows.zip` — three Go exes + EFI + Gen2 BYOVD runtime
+          files: |
+            dist/linux/cmp50hx-unlock-linux.run
+            dist/linux/cmp50hx-unlock-linux.tar.gz
+            dist/linux/cmp50hx-unlock-linux.tar.gz.sha256
+            dist/windows/cmp50hx-unlock-windows.zip
+            dist/windows/cmp50hx-unlock-windows.zip.sha256
+          fail_on_unmatched_files: true
