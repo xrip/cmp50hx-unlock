@@ -121,8 +121,14 @@ jobs:
           $gw = $env:GITHUB_WORKSPACE
           $parent = Split-Path -Parent $gw
           $leaf    = Split-Path -Leaf  $gw
-          if ($parent -and (Split-Path -Leaf $parent) -eq $leaf -and (Test-Path (Join-Path $parent $leaf))) {
-              $Root = $parent
+          if ($parent -and (Split-Path -Leaf $parent) -eq $leaf) {
+              $outer = $parent
+              $inner = $gw
+              if ((Test-Path $outer) -and (Test-Path $inner) -and -not (Test-Path (Join-Path $outer 'tools'))) {
+                  $Root = $inner
+              } else {
+                  $Root = $outer
+              }
           } else {
               $Root = $gw
           }
