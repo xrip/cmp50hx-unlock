@@ -61,8 +61,8 @@ jobs:
           sha256sum "$D/payload.tar.gz"
           diff <(sha256sum < "$D/payload.tar.gz" | cut -d' ' -f1) \
                <(cut -d' ' -f1 cmp50hx-unlock-linux.tar.gz.sha256)
-          tar -tzf "$D/payload.tar.gz" | grep -x 'install.sh'
-          tar -tzf "$D/payload.tar.gz" | grep -x '50HXUNLK.EFI'
+          tar -tzf "$D/payload.tar.gz" | grep -x './install.sh'
+          tar -tzf "$D/payload.tar.gz" | grep -x './50HXUNLK.EFI'
           rm -rf "$D"
 
       - name: Upload Linux artifacts
