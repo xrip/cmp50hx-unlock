@@ -94,6 +94,7 @@ SHA256="$SHA"
 PAYLOAD_SIZE="$PAYLOAD_SIZE"
 DEFAULT_URL="${CMP_RELEASE_URL:-}"
 INSTALL_SH="install.sh"
+HDR_LINES="__HDR_LINES__"
 TMP=\$(mktemp -d -t cmp50hx.XXXXXX)
 trap "rm -rf "\$TMP"" EXIT
 
@@ -107,11 +108,11 @@ URL_MODE_DEFAULT="$URL_MODE"
 while [[ \$# -gt 0 ]]; do
   case "\$1" in
     --self-check)       echo "embedded payload size: \$PAYLOAD_SIZE bytes"; echo "sha256: \$SHA256"; exit 0 ;;
-    --unpack-only)      URL_MODE_DEFAULT="unpack-only"; shift ;;
-    --use-embedded)     URL_MODE_DEFAULT="embedded"; shift ;;
-    --url URL)          PAYLOAD_URL="\${2:?}"; shift 2 ;;
-    --tarball FILE)     PAYLOAD="\${2:?}"; shift 2 ;;
-    --workdir DIR)      WORKDIR="\${2:?}"; shift 2 ;;
+    --unpack-only)      UNPACK_ONLY=1; shift ;;
+    --use-embedded)     USE_EMBEDDED=1; shift ;;
+    --url)              PAYLOAD_URL="\${2:?}"; shift 2 ;;
+    --tarball)          PAYLOAD="\${2:?}"; shift 2 ;;
+    --workdir)          WORKDIR="\${2:?}"; shift 2 ;;
     --no-elevate)       ELEVATE=0; shift ;;
     --version)          echo "\$NAME \$VERSION"; exit 0 ;;
     -h|--help)
@@ -141,13 +142,14 @@ if [[ -n "\${PAYLOAD:-}" ]]; then
   WORKDIR="\${WORKDIR:-\$TMP}"
   mkdir -p "\$WORKDIR"
   tar -C "\$WORKDIR" -xzf "\$PAYLOAD"
-elif [[ "\$URL_MODE_DEFAULT" == "embedded" ]]; then
+elif [[ "\${USE_EMBEDDED:-0}" == "1" ]]; then
   echo ">> extracting embedded payload..."
   WORKDIR="\${WORKDIR:-\$TMP}"
   mkdir -p "\$WORKDIR"
-  # Find the sentinel and extract everything after it. GNU sed passes
-  # NUL bytes through; mawk truncates at NUL, so awk is not binary-safe.
-  sed '1,/^__CMP_PAYLOAD_TGZ_BELOW__$/d' "\$0" > "\$WORKDIR/payload.tar.gz"
+  # Binary-safe extraction: the builder patches HDR_LINES to the exact
+  # number of header lines, and tail copies raw bytes verbatim (sed and
+  # awk both mangle NUL bytes in binary payloads).
+  tail -n "+\$(( HDR_LINES + 1 ))" "\$0" > "\$WORKDIR/payload.tar.gz"
 else
   URL="\${PAYLOAD_URL:-\$DEFAULT_URL}"
   [[ -n "\$URL" ]] || die "no payload URL available (CMP_RELEASE_URL was empty)"
@@ -170,7 +172,7 @@ if [[ "\$SHA_ACTUAL" != "\$SHA256" ]]; then
 fi
 
 # --- 3. install --------------------------------------------------------
-if [[ "\$URL_MODE_DEFAULT" == "unpack-only" ]]; then
+if [[ "\${UNPACK_ONLY:-0}" == "1" ]]; then
   echo ">> unpacked at: \$WORKDIR"
   exit 0
 fi
@@ -195,8 +197,11 @@ fi
 __CMP_PAYLOAD_TGZ_BELOW__
 HEADER
 
-# Append payload (raw, NOT base64 — saves 30% size and a runtime decode)
-# Above header uses a heredoc + sentinel; here we just cat the tarball.
+# Patch the real header line count into HDR_LINES (header is pure text,
+# so sed is safe here), then append the raw binary payload. tail at
+# runtime skips exactly HDR_LINES lines and copies bytes verbatim.
+HDR_LINES=$(awk 'END{print NR}' < "$OUT")
+sed -i "s/__HDR_LINES__/$HDR_LINES/" "$OUT"
 cat "$TAR" >> "$OUT"
 chmod +x "$OUT"
 
