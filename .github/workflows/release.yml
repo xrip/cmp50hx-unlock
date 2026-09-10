@@ -5,88 +5,65 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Skip publishing a GitHub release (build only)'
-        required: false
-        default: 'false'
 
 permissions:
   contents: write
 
 jobs:
-  # -----------------------------------------------------------------
-  # Linux build — produces a self-extracting .run that downloads a
-  # precompiled release tarball and runs install.sh (apt deps,
-  # patched 610.43.03 module build, EFI deploy, post-install verify).
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Linux: build the EFI binary, wrap it with the ESP-deploy installer
+  # into a self-extracting .run. No kernel-module build here: a module
+  # compiled against the runner's kernel would not load on user hosts;
+  # users who want the patched module run install.sh from the repo.
+  # -------------------------------------------------------------------
   linux:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache vendor (toolchain + NVIDIA source)
-        uses: actions/cache@v4
-        with:
-          path: |
-            efi-unlock/blobs
-            cache/610.43.03.tar.gz
-            cache/NVIDIA-Linux-x86_64-610.43.03.run
-          key: vendor-610.43.03-${{ hashFiles('patches/cmp50hx/01-cmp50-stockflow.patch', 'efi-unlock/build.sh') }}
-          restore-keys: |
-            vendor-610.43.03-
-
-      - name: Build patched 610.43.03 module + EFI binary
+      - name: Build the EFI binary
         run: |
-          set -e
-          cd "$GITHUB_WORKSPACE"
-          sudo apt-get install -y build-essential gnu-efi
-          # build.sh refuses to write into an existing artifact dir; clean
-          # any prior partial run and use a stable, unique path.
-          rm -rf artifacts
-          export CMP_UNLOCK_ARTIFACT_DIR="$GITHUB_WORKSPACE/artifacts"
-          export CMP_UNLOCK_CACHE_DIR="$GITHUB_WORKSPACE/cache"
-          export KERNEL_RELEASE="$(uname -r)"
-          ./build.sh --source-tarball "$GITHUB_WORKSPACE/cache/610.43.03.tar.gz" \
-                     --card cmp50hx
-          ( cd efi-unlock && ./build.sh )
-          find artifacts -maxdepth 4 -name 'nvidia.ko' | head
-          ls -la efi-unlock/50HXUNLK.EFI
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential gnu-efi
+          cd efi-unlock
+          bash ./build.sh
+          sha256sum 50HXUNLK.EFI | tee 50HXUNLK.EFI.sha256
 
-      - name: Compose Linux release payload (tar.gz)
+      - name: Compose the Linux payload
         run: |
-          set -e
-          cd "$GITHUB_WORKSPACE"
-          STAGE=artifacts/linux-stage
-          rm -rf "$STAGE"; mkdir -p "$STAGE"
-          cp install.sh                                              $STAGE/
-          cp -r efi-unlock/blobs                                      $STAGE/blobs
-          cp efi-unlock/README.md efi-unlock/unlock50x_v1.c            $STAGE/
-          cp efi-unlock/build.sh                                      $STAGE/
-          cp efi-unlock/50HXUNLK.EFI                                  $STAGE/
-          sha256sum efi-unlock/50HXUNLK.EFI                           > $STAGE/50HXUNLK.EFI.sha256
+          set -eux
+          STAGE="$PWD/.stage-linux"
+          rm -rf "$STAGE" && mkdir -p "$STAGE"
+          cp efi-unlock/50HXUNLK.EFI "$STAGE/"
+          cp efi-unlock/50HXUNLK.EFI.sha256 "$STAGE/"
+          cp efi-unlock/install-linux.sh "$STAGE/install.sh"
+          cp efi-unlock/README.md "$STAGE/README.md"
           tar -C "$STAGE" -czf cmp50hx-unlock-linux.tar.gz .
           sha256sum cmp50hx-unlock-linux.tar.gz > cmp50hx-unlock-linux.tar.gz.sha256
-          ls -la cmp50hx-unlock-linux.tar.gz*
 
-      - name: Build one-click Linux installer (.run)
+      - name: Build the self-extracting installer (.run)
         run: |
-          set -e
-          cd "$GITHUB_WORKSPACE"
-          CMP_RELEASE_URL="https://github.com/${{ github.repository }}/releases/latest/download/cmp50hx-unlock-linux.tar.gz" \
-          CMP_RELEASE_SHA=$(awk '{print $1}' cmp50hx-unlock-linux.tar.gz.sha256) \
+          set -eux
           CMP_VERSION="${GITHUB_REF_NAME:-dev}" \
+          CMP_RELEASE_URL="https://github.com/${{ github.repository }}/releases/latest/download/cmp50hx-unlock-linux.tar.gz" \
             bash tools/build-linux-installer.sh \
               --tar cmp50hx-unlock-linux.tar.gz \
               --out cmp50hx-unlock-linux.run
-          ls -la cmp50hx-unlock-linux.run
 
-      - name: Smoke-test the .run (dry-run, no install)
+      - name: Smoke-test the .run (real extraction + checksum)
         run: |
-          set -e
-          cd "$GITHUB_WORKSPACE"
-          head -1 cmp50hx-unlock-linux.run | grep -q '^#!' || (echo "missing shebang" && exit 1)
-          cmp50hx-unlock-linux.run --self-check
+          set -eux
+          ./cmp50hx-unlock-linux.run --self-check
+          # extract the embedded payload for real and verify integrity
+          D="$(mktemp -d)"
+          ./cmp50hx-unlock-linux.run --use-embedded --unpack-only --workdir "$D"
+          sha256sum "$D/payload.tar.gz"
+          diff <(sha256sum < "$D/payload.tar.gz" | cut -d' ' -f1) \
+               <(cut -d' ' -f1 cmp50hx-unlock-linux.tar.gz.sha256)
+          tar -tzf "$D/payload.tar.gz" | grep -x 'install.sh'
+          tar -tzf "$D/payload.tar.gz" | grep -x '50HXUNLK.EFI'
+          rm -rf "$D"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -97,11 +74,11 @@ jobs:
             cmp50hx-unlock-linux.tar.gz
             cmp50hx-unlock-linux.tar.gz.sha256
 
-  # -----------------------------------------------------------------
-  # Windows build — produces a ZIP with the three Go exes + the
-  # embedded EFI + the BYOVD Gen2 runtime. User double-clicks
-  # 50HXInstaller.exe to install (per efi-unlock-windows/README.md).
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Windows: build the three Go tools (they embed the EFI binary from
+  # efi-unlock-windows/tools/inst50hx/embed/) and bundle the BYOVD
+  # Gen2 runtime into a ZIP.
+  # -------------------------------------------------------------------
   windows:
     runs-on: windows-2022
     steps:
@@ -110,72 +87,54 @@ jobs:
         with:
           go-version: '1.23'
 
-      - name: Build 50HXInstaller / 50HXUninstaller / 50HXCheck
+      - name: Build the Go tools
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # Some windows-2022 runners set $GITHUB_WORKSPACE with a doubled
-          # trailing segment (e.g. 'D:\a\<repo>\<repo>'). Strip it by
-          # always pointing to the parent if the last segment equals the
-          # parent's last segment. Then verify everything exists.
-          $gw = $env:GITHUB_WORKSPACE
-          $parent = Split-Path -Parent $gw
-          $leaf    = Split-Path -Leaf  $gw
-          if ($parent -and (Split-Path -Leaf $parent) -eq $leaf) {
-              $outer = $parent
-              $inner = $gw
-              if ((Test-Path $outer) -and (Test-Path $inner) -and -not (Test-Path (Join-Path $outer 'tools'))) {
-                  $Root = $inner
-              } else {
-                  $Root = $outer
-              }
-          } else {
-              $Root = $gw
-          }
-          Write-Output "GITHUB_WORKSPACE = $gw"
-          Write-Output "Root           = $Root"
-          $Stage = Join-Path $Root 'artifacts\windows-stage'
+          # Note: the checkout lives at $env:GITHUB_WORKSPACE, whose path
+          # ends in \<repo>\<repo> — that is the standard Actions layout.
+          $W = $env:GITHUB_WORKSPACE
+          $Tools = Join-Path $W 'efi-unlock-windows\tools'
+          $Stage = Join-Path $W 'artifacts\windows-stage'
           New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-          Push-Location (Join-Path $Root 'tools\winres_gen')
-          try { go build -o (Join-Path $Stage 'winres_gen.exe') . }
-          finally { Pop-Location }
-          & (Join-Path $Stage 'winres_gen.exe') -o (Join-Path $Root 'tools\inst50hx\rsrc_windows_amd64.syso')
+          foreach ($d in @('winres_gen','inst50hx','uninstall50x','check50x')) {
+              if (-not (Test-Path (Join-Path $Tools $d))) {
+                  throw "missing tool dir: $(Join-Path $Tools $d)"
+              }
+          }
+          # winres_gen generates the .syso once (skipped if already present)
+          if (-not (Test-Path (Join-Path $Tools 'inst50hx\rsrc_windows_amd64.syso'))) {
+              Push-Location (Join-Path $Tools 'winres_gen')
+              try { go build -o (Join-Path $Stage 'winres_gen.exe') . }
+              finally { Pop-Location }
+              & (Join-Path $Stage 'winres_gen.exe') -o (Join-Path $Tools 'inst50hx\rsrc_windows_amd64.syso')
+          }
           foreach ($t in @(
-              @{ Name = '50HXInstaller.exe';   Dir = 'tools\inst50hx' },
-              @{ Name = '50HXUninstaller.exe'; Dir = 'tools\uninstall50x' },
-              @{ Name = '50HXCheck.exe';       Dir = 'tools\check50x' }
+              @{ Name = '50HXInstaller.exe';   Dir = 'inst50hx' },
+              @{ Name = '50HXUninstaller.exe'; Dir = 'uninstall50x' },
+              @{ Name = '50HXCheck.exe';       Dir = 'check50x' }
           )) {
-              Push-Location (Join-Path $Root $t.Dir)
-              try { go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o (Join-Path $Stage $t.Name) . }
+              Push-Location (Join-Path $Tools $t.Dir)
+              try { go build -a -trimpath -ldflags='-H=windowsgui -s -w' -o (Join-Path $Stage $t.Name) . }
               finally { Pop-Location }
           }
-          Copy-Item -Recurse -Force (Join-Path $Root 'gen2\*') $Stage
-          if (Test-Path (Join-Path $Root 'efi-unlock-windows\README.md')) {
-              Copy-Item -Force (Join-Path $Root 'efi-unlock-windows\README.md') (Join-Path $Stage 'README.md')
-          }
-          if (Test-Path (Join-Path $Root 'efi-unlock\50HXUNLK.EFI')) {
-              Copy-Item -Force (Join-Path $Root 'efi-unlock\50HXUNLK.EFI') (Join-Path $Stage '50HXUNLK.EFI')
-          }
-          foreach ($dir in @('CMP40HX-Unlock','.')) {
-              $p = Join-Path $Root (Join-Path $dir 'LICENSE')
-              if (Test-Path $p) {
-                  Copy-Item -Force $p (Join-Path $Stage ("LICENSE-$dir"))
-                  break
-              }
-          }
+          # payload pieces
+          Copy-Item -Recurse -Force (Join-Path $W 'efi-unlock-windows\gen2\*') $Stage
+          Copy-Item -Force (Join-Path $W 'efi-unlock-windows\README.md') (Join-Path $Stage 'README.md')
+          Copy-Item -Force (Join-Path $Tools 'inst50hx\embed\50HXUNLK.EFI') (Join-Path $Stage '50HXUNLK.EFI')
           Get-ChildItem $Stage | Format-Table Name,Length
-          $hash = (Get-FileHash (Join-Path $Stage '50HXInstaller.exe') -Algorithm SHA256).Hash
-          Write-Output "50HXInstaller.exe sha256: $hash"
+          (Get-FileHash (Join-Path $Stage '50HXInstaller.exe') -Algorithm SHA256).Hash
 
-      - name: Compose Windows ZIP
+      - name: Compose the Windows ZIP
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cd "$env:GITHUB_WORKSPACE"
-          if (Test-Path cmp50hx-unlock-windows.zip) { Remove-Item cmp50hx-unlock-windows.zip }
-          Compress-Archive -Path artifacts\windows-stage\* -DestinationPath cmp50hx-unlock-windows.zip -CompressionLevel Optimal
-          (Get-FileHash cmp50hx-unlock-windows.zip -Algorithm SHA256).Hash | Tee-Object -FilePath cmp50hx-unlock-windows.zip.sha256
-          Get-Item cmp50hx-unlock-windows.zip, cmp50hx-unlock-windows.zip.sha256 | Format-Table Name,Length
+          $Zip = Join-Path $env:GITHUB_WORKSPACE 'cmp50hx-unlock-windows.zip'
+          if (Test-Path $Zip) { Remove-Item $Zip }
+          Compress-Archive -Path (Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-stage\*') `
+                           -DestinationPath $Zip -CompressionLevel Optimal
+          "$((Get-FileHash $Zip -Algorithm SHA256).Hash)  cmp50hx-unlock-windows.zip" |
+            Set-Content -NoNewline (Join-Path $env:GITHUB_WORKSPACE 'cmp50hx-unlock-windows.zip.sha256')
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -185,12 +144,12 @@ jobs:
             cmp50hx-unlock-windows.zip
             cmp50hx-unlock-windows.zip.sha256
 
-  # -----------------------------------------------------------------
-  # Publish release (only on tag push, unless dry_run)
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Publish the release (tag pushes only)
+  # -------------------------------------------------------------------
   release:
     needs: [linux, windows]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != 'true'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -217,12 +176,12 @@ jobs:
             ```
 
             **Windows** — download `cmp50hx-unlock-windows.zip`, unzip, then:
-            * right-click `50HXInstaller.exe` → Run as administrator → Install
+            right-click `50HXInstaller.exe` → *Run as administrator* → *Install*
 
-            Files:
-            * `cmp50hx-unlock-linux.run` — self-extracting installer (kernel module + EFI + config)
-            * `cmp50hx-unlock-linux.tar.gz` — raw payload (for inspection / manual install)
-            * `cmp50hx-unlock-windows.zip` — three Go exes + EFI + Gen2 BYOVD runtime
+            Both ship the same UEFI compute unlock (FP32 31.7x / DP4A 28.4x
+            over the locked stock driver, zero Xid; A/B matrix:
+            efi-unlock/runs/20260910-ab-stock-vs-efi.md). Requires UEFI boot
+            with Above 4G Decoding on and Secure Boot off.
           files: |
             dist/linux/cmp50hx-unlock-linux.run
             dist/linux/cmp50hx-unlock-linux.tar.gz

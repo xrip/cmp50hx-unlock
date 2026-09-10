@@ -145,11 +145,9 @@ elif [[ "\$URL_MODE_DEFAULT" == "embedded" ]]; then
   echo ">> extracting embedded payload..."
   WORKDIR="\${WORKDIR:-\$TMP}"
   mkdir -p "\$WORKDIR"
-  # Find the sentinel and extract everything after it (binary-safe awk)
-  _sentinel="__CMP_PAYLOAD_TGZ_BELOW__"
-  awk -v s="\$_sentinel" '
-    $0 == s {p=1; next} p {print}
-  ' "\$0" > "\$WORKDIR/payload.tar.gz"
+  # Find the sentinel and extract everything after it. GNU sed passes
+  # NUL bytes through; mawk truncates at NUL, so awk is not binary-safe.
+  sed '1,/^__CMP_PAYLOAD_TGZ_BELOW__$/d' "\$0" > "\$WORKDIR/payload.tar.gz"
 else
   URL="\${PAYLOAD_URL:-\$DEFAULT_URL}"
   [[ -n "\$URL" ]] || die "no payload URL available (CMP_RELEASE_URL was empty)"

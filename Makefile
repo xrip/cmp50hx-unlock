@@ -25,12 +25,10 @@ efi:
 
 $(PAYLOAD_TGZ): efi
 	rm -rf $(STAGE_DIR); mkdir -p $(STAGE_DIR)
-	cp install.sh                                          $(STAGE_DIR)/
-	cp -r efi-unlock/blobs                                  $(STAGE_DIR)/blobs
-	cp efi-unlock/README.md efi-unlock/unlock50x_v1.c        $(STAGE_DIR)/
-	cp efi-unlock/build.sh                                  $(STAGE_DIR)/
+	cp efi-unlock/install-linux.sh                          $(STAGE_DIR)/install.sh
 	cp efi-unlock/50HXUNLK.EFI                              $(STAGE_DIR)/
 	sha256sum efi-unlock/50HXUNLK.EFI                       > $(STAGE_DIR)/50HXUNLK.EFI.sha256
+	cp efi-unlock/README.md                                 $(STAGE_DIR)/
 	tar -C $(STAGE_DIR) -czf $(PAYLOAD_TGZ) .
 	sha256sum $(PAYLOAD_TGZ) > $(PAYLOAD_TGZ).sha256
 	@echo "wrote $(PAYLOAD_TGZ) ($(shell wc -c < $(PAYLOAD_TGZ)) bytes)"
