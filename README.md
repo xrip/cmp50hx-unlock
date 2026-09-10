@@ -121,6 +121,19 @@ Notes:
   in
   [`docs/CMP50HX-SHARED-OBJECT-AUDIT.md`](docs/CMP50HX-SHARED-OBJECT-AUDIT.md).
 
+## UEFI compute unlock (experimental, not yet hardware-tested)
+
+[`efi-unlock/`](efi-unlock/README.md) is a port of the
+[CMP40HX-Unlock](https://github.com/PZH1gdmu/CMP40HX-Unlock) v3.0.0 UEFI
+application (MIT) to the 50HX: it unlocks SS0/SS1 pre-OS via the same V67
+canary Booter exploit as stockflow, then chainloads the Linux boot manager
+with no POST in between, so no patched kernel module is needed for the
+compute unlock itself. The native TU102 FWSEC was extracted from our board
+ROM (`extract_fwsec.py`), and the WPR2-already-up fast path is based on our
+own dmesg evidence (`FWSEC_COMPLETE_GSP_UNTOUCHED`). ReBAR, Gen2, and the
+RT-count override remain kernel patches. See the directory README for the
+mechanism, blob manifest, build, install, rollback, and risks.
+
 ## Optional userspace pipeline-bind patch
 
 [`userspace-patch/`](userspace-patch/README.md) makes a private copy of the

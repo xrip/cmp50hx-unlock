@@ -1,0 +1,3 @@
+map -r
+ls fs0:\EFI\BOOT
+fs0:\EFI\BOOT\BOOTX64.EFI
