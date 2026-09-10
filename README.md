@@ -29,7 +29,12 @@ required only if you want the patched kernel module too (the UEFI unlock
 itself works with the stock module).
 
 To build the bundles yourself: `make release` (Linux + Windows
-toolchain needed — see `Makefile`).
+toolchain needed — see `Makefile`). CI ships them automatically: GitHub
+Actions on every `v*` tag (`.github/workflows/release.yml`), and
+`.gitlab-ci.yml` does the same on GitLab — including the Release with
+downloadable artifacts. The GitLab pipeline needs only ordinary Linux
+docker runners (the Windows Go tools are cross-compiled with
+`GOOS=windows`).
 
 
 
