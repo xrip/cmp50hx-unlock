@@ -9,6 +9,27 @@ developed and proven here; the 90HX path is a port of the rejoin16 work by
 built on the [pearlfortune/cmpunlocker](https://github.com/pearlfortune/cmpunlocker)
 v0.1.28 90hx-stockflow bundle.
 
+## UEFI compute unlock (working, no kernel patches needed)
+
+[`efi-unlock/`](efi-unlock/README.md) is a port of the
+[CMP40HX-Unlock](https://github.com/PZH1gdmu/CMP40HX-Unlock) v3.0.0 UEFI
+application (MIT) to the 50HX. It unlocks SS0/SS1 **pre-OS** via the same
+V67 canary Booter exploit as stockflow, then chainloads the Linux boot
+manager with no POST in between — so the compute unlock needs **no patched
+kernel module at all**.
+
+Proven live on 2026-09-10 (host .224): the exploit fires
+(`*** UNLOCKED (SS0=0x88888888 SS1=0x8) ***`), the state survives into
+Linux with zero Xid, and an A/B test against the **stock, unpatched**
+610.43.03 driver measured FP32 0.427 → **13.512 TFLOP/s (31.7x)** and
+DP4A 1.689 → **47.984 TIOP/s (28.4x)** versus the locked baseline — the
+stock driver's GSP boot accepts the pre-OS state cleanly. Full matrix in
+[`efi-unlock/runs/20260910-ab-stock-vs-efi.md`](efi-unlock/runs/20260910-ab-stock-vs-efi.md).
+
+ReBAR, Gen2, and the RT-count override remain kernel patches (see the
+feature table in the directory README). Install guide, prerequisites,
+verification, and rollback: [`efi-unlock/README.md`](efi-unlock/README.md).
+
 The rest of this file is the working record for the five CMP50HX patches in
 `patches/cmp50hx/`. It explains the code path, the reason for each change, the
 checks that support it, and the limits of the proof. The series is for the
@@ -120,27 +141,6 @@ Notes:
   five-library user-space audit and the negative forced-compiler comparison are
   in
   [`docs/CMP50HX-SHARED-OBJECT-AUDIT.md`](docs/CMP50HX-SHARED-OBJECT-AUDIT.md).
-
-## UEFI compute unlock (working, no kernel patches needed)
-
-[`efi-unlock/`](efi-unlock/README.md) is a port of the
-[CMP40HX-Unlock](https://github.com/PZH1gdmu/CMP40HX-Unlock) v3.0.0 UEFI
-application (MIT) to the 50HX. It unlocks SS0/SS1 **pre-OS** via the same
-V67 canary Booter exploit as stockflow, then chainloads the Linux boot
-manager with no POST in between — so the compute unlock needs **no patched
-kernel module at all**.
-
-Proven live on 2026-09-10 (host .224): the exploit fires
-(`*** UNLOCKED (SS0=0x88888888 SS1=0x8) ***`), the state survives into
-Linux with zero Xid, and an A/B test against the **stock, unpatched**
-610.43.03 driver measured FP32 0.427 → **13.512 TFLOP/s (31.7x)** and
-DP4A 1.689 → **47.984 TIOP/s (28.4x)** versus the locked baseline — the
-stock driver's GSP boot accepts the pre-OS state cleanly. Full matrix in
-[`efi-unlock/runs/20260910-ab-stock-vs-efi.md`](efi-unlock/runs/20260910-ab-stock-vs-efi.md).
-
-ReBAR, Gen2, and the RT-count override remain kernel patches (see the
-feature table in the directory README). Install guide, prerequisites,
-verification, and rollback: [`efi-unlock/README.md`](efi-unlock/README.md).
 
 ## Optional userspace pipeline-bind patch
 
