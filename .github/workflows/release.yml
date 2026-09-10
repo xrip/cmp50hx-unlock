@@ -40,12 +40,13 @@ jobs:
         run: |
           set -e
           cd "$GITHUB_WORKSPACE"
-          # build.sh reads the artifact dir from $CMP_UNLOCK_ARTIFACT_DIR
-          # (no --artifacts-dir flag exists) and refuses if the parent
-          # already exists. Do NOT pre-create it.
           sudo apt-get install -y build-essential gnu-efi
+          # build.sh refuses to write into an existing artifact dir; clean
+          # any prior partial run and use a stable, unique path.
+          rm -rf artifacts
           export CMP_UNLOCK_ARTIFACT_DIR="$GITHUB_WORKSPACE/artifacts"
           export CMP_UNLOCK_CACHE_DIR="$GITHUB_WORKSPACE/cache"
+          export KERNEL_RELEASE="$(uname -r)"
           ./build.sh --source-tarball "$GITHUB_WORKSPACE/cache/610.43.03.tar.gz" \
                      --card cmp50hx
           ( cd efi-unlock && ./build.sh )
@@ -113,33 +114,35 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # on windows-2022 the runner's CWD is D:\a\_temp\<job-id>; cd
-          # into $GITHUB_WORKSPACE first so relative paths work too.
-          Set-Location $env:GITHUB_WORKSPACE
-          $Stage = Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-stage'
+          # Resolve $GITHUB_WORKSPACE to a canonical absolute path. Some
+          # windows-2022 runners set the env var with a doubled trailing
+          # segment that breaks Push-Location; Resolve-Path catches that.
+          $Root = (Resolve-Path $env:GITHUB_WORKSPACE).Path
+          Write-Output "GITHUB_WORKSPACE = $Root"
+          $Stage = Join-Path $Root 'artifacts\windows-stage'
           New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-          Push-Location 'tools\winres_gen'
+          Push-Location (Join-Path $Root 'tools\winres_gen')
           try { go build -o (Join-Path $Stage 'winres_gen.exe') . }
           finally { Pop-Location }
-          & (Join-Path $Stage 'winres_gen.exe') -o 'tools\inst50hx\rsrc_windows_amd64.syso'
+          & (Join-Path $Stage 'winres_gen.exe') -o (Join-Path $Root 'tools\inst50hx\rsrc_windows_amd64.syso')
           foreach ($t in @(
               @{ Name = '50HXInstaller.exe';   Dir = 'tools\inst50hx' },
               @{ Name = '50HXUninstaller.exe'; Dir = 'tools\uninstall50x' },
               @{ Name = '50HXCheck.exe';       Dir = 'tools\check50x' }
           )) {
-              Push-Location $t.Dir
+              Push-Location (Join-Path $Root $t.Dir)
               try { go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o (Join-Path $Stage $t.Name) . }
               finally { Pop-Location }
           }
-          Copy-Item -Recurse -Force 'gen2\*' $Stage
-          if (Test-Path 'efi-unlock-windows\README.md') {
-              Copy-Item -Force 'efi-unlock-windows\README.md' (Join-Path $Stage 'README.md')
+          Copy-Item -Recurse -Force (Join-Path $Root 'gen2\*') $Stage
+          if (Test-Path (Join-Path $Root 'efi-unlock-windows\README.md')) {
+              Copy-Item -Force (Join-Path $Root 'efi-unlock-windows\README.md') (Join-Path $Stage 'README.md')
           }
-          if (Test-Path 'efi-unlock\50HXUNLK.EFI') {
-              Copy-Item -Force 'efi-unlock\50HXUNLK.EFI' (Join-Path $Stage '50HXUNLK.EFI')
+          if (Test-Path (Join-Path $Root 'efi-unlock\50HXUNLK.EFI')) {
+              Copy-Item -Force (Join-Path $Root 'efi-unlock\50HXUNLK.EFI') (Join-Path $Stage '50HXUNLK.EFI')
           }
           foreach ($dir in @('CMP40HX-Unlock','.')) {
-              $p = Join-Path $dir 'LICENSE'
+              $p = Join-Path $Root (Join-Path $dir 'LICENSE')
               if (Test-Path $p) {
                   Copy-Item -Force $p (Join-Path $Stage ("LICENSE-$dir"))
                   break
