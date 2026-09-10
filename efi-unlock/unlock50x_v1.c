@@ -146,7 +146,7 @@ static void u40x_print(const CHAR16 *fmt, ...) {
         UINTN w = 0;
         const CHAR16 *fptr = fmt;
         while (*fptr && w < 480) {
-            if (*fptr == L'\n') {   /* EFI ConOut 需 \r\n */
+            if (*fptr == L'\n') {   /* EFI ConOut needs \r\n */
                 u40x_wide[w++] = L'\r';
                 if (w < 480) u40x_wide[w++] = L'\n';
                 fptr++;
@@ -209,7 +209,7 @@ static void u40x_print(const CHAR16 *fmt, ...) {
  * Print crashed immediately (flash-and-exit). Provide them + entry. */
 extern EFI_SYSTEM_TABLE *ST;
 extern EFI_BOOT_SERVICES *BS;
-EFI_HANDLE ImageHandle = NULL; /* crt0 全局——我们自己提供 */
+EFI_HANDLE ImageHandle = NULL; /* crt0 global - provided by ourselves */
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE, EFI_SYSTEM_TABLE *);
 
@@ -280,7 +280,7 @@ u40x_entry(EFI_HANDLE ImageHandle_, EFI_SYSTEM_TABLE *SystemTable_)
 #define SEC2_FBIF_TRANSCFG0     (NV_PSEC_FBIF_BASE + 0x00)
 #define SEC2_BCR_CTRL           (NV_FALCON2_SEC_BASE + 0x668)  /* CORE_SELECT: 0=FALCON, 1=RISCV */
 #define SEC2_RM                 (NV_PSEC_BASE + 0x084)  /* chipId0 (v2.24) */
-/* Порты чтения/записи IMEM/DMEM (v2.17 диагностика DMA；v56 TU102 装载用) */
+/* IMEM/DMEM read/write ports (v2.17 DMA diagnostics; v56 TU102 load use) */
 #define SEC2_IMEMT0             (NV_PSEC_BASE + 0x188)  /* IMEM block tag port (driver IMEMT(0)) */
 #define SEC2_IMEMC0             (NV_PSEC_BASE + 0x180)
 #define SEC2_IMEMD0             (NV_PSEC_BASE + 0x184)
@@ -289,9 +289,9 @@ u40x_entry(EFI_HANDLE ImageHandle_, EFI_SYSTEM_TABLE *SystemTable_)
 
 /* ==== GSP Falcon registers ====
  * The kernel driver resets GSP before the SEC2 booter load:
- * Драйвер перед SEC2 booter load РЕСЕТИТ GSP (kflcnReset в _kgspBootGspRm) —
- * живой GFW из POST держит SEC2 залоченным (0xBADF5620). ENGINE (0x1103C0)
- * доступен из EFI → убиваем GFW тем же способом, что и драйвер. */
+ * The driver before SEC2 booter load RESETS GSP (kflcnReset in _kgspBootGspRm) -
+ * the live GFW from POST holds SEC2 locked (0xBADF5620). ENGINE (0x1103C0)
+ * is accessible from EFI -> kill GFW in the same way the driver does. */
 #define GSP_BASE                0x00110000UL
 #define GSP_ENGINE              (GSP_BASE + 0x3C0)
 #define GSP_MAILBOX0            (GSP_BASE + 0x040)
@@ -316,28 +316,30 @@ u40x_entry(EFI_HANDLE ImageHandle_, EFI_SYSTEM_TABLE *SystemTable_)
 #define NV_PTIMER_TIME_0        0x00009400UL
 #define NV_PTIMER_TIME_1        0x00009410UL
 
-/* ==== Boot (SEC2) ucode layout constants — ground truth from bindata ====
+/* ==== Boot (SEC2) ucode layout constants - ground truth from bindata ====
  *
- * v55 修正：这些几何量是 CHIP 相关的！unlock_v2 原值（imem 0x8900 @+0x100、
- * data 0x8A00/0x6200、patchLoc 0x8A10、ucodeId=3）来自 90HX GA102。40HX 是
- * TU106，驱动用 TU102 archive（kgspGetBinArchiveBooterLoadUcode_TU102），
- * nv616 booter (md5 52a65b17) 的真实几何 = 本地 610.43.03 源码
- * g_bindata_...TU102.c 的 HEADER_PROD（raw-deflate 解压 36B）：
+ * v55 fix: these geometric values are CHIP-dependent! unlock_v2 original values
+ * (imem 0x8900 @+0x100, data 0x8A00/0x6200, patchLoc 0x8A10, ucodeId=3) come from
+ * the 90HX GA102. The 40HX is TU106, and the driver uses the TU102 archive
+ * (kgspGetBinArchiveBooterLoadUcode_TU102). The real geometry of nv616 booter
+ * (md5 52a65b17) = the HEADER_PROD in the local 610.43.03 source code
+ * g_bindata_...TU102.c (raw-deflate decompress 36B):
  *   osCodeOffset=0x0   osCodeSize=0x100
- *   osDataOffset=0x8500 osDataSize=0x6200     ← 0x8500+0x6200 = 0xE700 = blob 全长（精确铺满）
- *   appCodeOffset=0x100 appCodeSize=0x8400    ← IMEM = image[0x100..0x8500)
- * PATCH_META={fuseVer=0,engineId=1,ucodeId=0xD=13}；PATCH_LOC=0x8700
- *   → hsSigDmemAddr = patchLoc - dataOffset = 0x8700-0x8500 = 0x200
- * 旧值 0x8900/0x8A00/0x6200 是 GA102 的，套在 0xE700 的 TU102 blob 上会
- * 把 DMEM 装载读到文件尾之外（0x8A00+0x6200=0xEC00 > 0xE700）——SIG 位
- * 置/DMEM 内容全错，booter 验签必败。
+ *   osDataOffset=0x8500 osDataSize=0x6200     <- 0x8500+0x6200 = 0xE700 = full blob length (exactly filled)
+ *   appCodeOffset=0x100 appCodeSize=0x8400    <- IMEM = image[0x100..0x8500)
+ * PATCH_META={fuseVer=0,engineId=1,ucodeId=0xD=13}; PATCH_LOC=0x8700
+ *   -> hsSigDmemAddr = patchLoc - dataOffset = 0x8700-0x8500 = 0x200
+ * The old values 0x8900/0x8A00/0x6200 are GA102's; applied to the 0xE700 TU102
+ * blob they would read DMEM past the end of the file (0x8A00+0x6200=0xEC00 > 0xE700)
+ * -- the SIG bit is wrong and the DMEM contents are all wrong, so the booter's
+ * signature verification will inevitably fail.
  */
-#define BOOTER_UCODE_SIZE       0x0000E700UL   /* nv616 TU102 booter (blob 全长, md5 52a65b17) */
-#define BOOTER_APP_CODE_OFFSET  0x00000100UL  /* header.appCodeOffset (imemVa/src 偏移) */
-#define BOOTER_APP_CODE_SIZE    0x00008400UL  /* header.appCodeSize  (IMEM DMA 长度, TU102) */
-#define BOOTER_OS_DATA_OFFSET   0x00008500UL  /* header.osDataOffset (DMEM src 偏移, TU102) */
-#define BOOTER_OS_DATA_SIZE     0x00006200UL  /* header.osDataSize   (DMEM DMA 长度, TU102) */
-#define BOOTER_SIG_PATCH_LOC    0x00008700UL  /* bindata PATCH_LOC（DMEM 内签名落点 = 0x200） */
+#define BOOTER_UCODE_SIZE       0x0000E700UL   /* nv616 TU102 booter (full blob length, md5 52a65b17) */
+#define BOOTER_APP_CODE_OFFSET  0x00000100UL  /* header.appCodeOffset (imemVa/src offset) */
+#define BOOTER_APP_CODE_SIZE    0x00008400UL  /* header.appCodeSize  (IMEM DMA length, TU102) */
+#define BOOTER_OS_DATA_OFFSET   0x00008500UL  /* header.osDataOffset (DMEM src offset, TU102) */
+#define BOOTER_OS_DATA_SIZE     0x00006200UL  /* header.osDataSize   (DMEM DMA length, TU102) */
+#define BOOTER_SIG_PATCH_LOC    0x00008700UL  /* bindata PATCH_LOC (signature landing slot inside DMEM = 0x200) */
 #define BOOTER_HS_SIG_DMEM_ADDR 0x00000200UL  /* patchLoc(0x8700) - dataOffset(0x8500), TU102 */
 #define BOOTER_UCODE_ID         13            /* PATCH_META.ucodeId (TU102 = 0xD; GA102 = 3) */
 #define BOOTER_ENGINE_ID_MASK   1             /* PATCH_META.engineId */
@@ -430,11 +432,11 @@ extern const UINT8 gsp_rm_boot_dbg[];      /* BL (GspRmBoot GA102), 0x6000 */
 extern const UINT8 fwsec_ga102_bin[];
 extern const UINT8 fwsec_ga102_sig[];
 
-/* v66: 40HX (TU106) 原生 FWSEC — 提取自 40HX_board_rom.bin (2026-08-24 本机
- * PROM dump). V2 desc: code imemLoad=0x9a00 + data dmemLoad=0x3f0 连续
- * (stored=0x9df0). prod(md5 582d0377)/dbg(md5 f0e22c2c) 内容仅 sig 区不同.
- * data 段内 interface@0xe0 → DMEMMAPPER(id4)@0x360 → cmd_in@0x3b0 (size 0x40).
- * 编译时间戳 "Dec 18 2019 13:15:43". 见 research/FWSEC_40HX_EXTRACT_20260903.md */
+/* v66: 40HX (TU106) native FWSEC - extracted from 40HX_board_rom.bin (2026-08-24 local
+ * PROM dump). V2 desc: code imemLoad=0x9a00 + data dmemLoad=0x3f0 contiguous
+ * (stored=0x9df0). prod (md5 582d0377) / dbg (md5 f0e22c2c) differ only in the sig area.
+ * In the data segment: interface@0xe0 -> DMEMMAPPER(id4)@0x360 -> cmd_in@0x3b0 (size 0x40).
+ * compile-time stamp "Dec 18 2019 13:15:43". See research/FWSEC_40HX_EXTRACT_20260903.md */
 extern const UINT8 fwsec_50hx_prod_bin[];
 extern const UINT8 fwsec_50hx_dbg_bin[];
 
@@ -445,15 +447,15 @@ extern const UINTN sec2_ucode_vbios_49_size;
 extern const UINT8 sec2_ucode_vbios_89[];
 extern const UINTN sec2_ucode_vbios_89_size;
 
-/* v70: generic falcon bootloader (sec2_bl_gp10x) — 从 OpenRM bindata
- * g_bindata_ksec2GetBinArchiveBlUcode_TU102.c 提取 (lz4/deflate 768B,
- * "works for both SEC2 and GSP"). FWSEC 是 WITH_LOADER 型 ucode
- * (kernel_gsp_fwsec.c:741 bootType=WITH_LOADER), secure code 必须由
- * generic BL 从 host 内存 DMA 拉进 secure IMEM — host 直写 secure IMEM
- * 在 v66-v69 全 scrub 已被实机证伪. 见 research/FWSEC_40HX_LOADER_20260903.md */
+/* v70: generic falcon bootloader (sec2_bl_gp10x) - extracted from OpenRM bindata
+ * g_bindata_ksec2GetBinArchiveBlUcode_TU102.c (lz4/deflate 768B,
+ * "works for both SEC2 and GSP"). FWSEC is a WITH_LOADER-type ucode
+ * (kernel_gsp_fwsec.c:741 bootType=WITH_LOADER); secure code must be DMA'd
+ * from host memory into secure IMEM by the generic BL - direct host writes to secure IMEM
+ * were empirically disproven across v66-v69 (always scrubbed). See research/FWSEC_40HX_LOADER_20260903.md */
 extern const UINT8 gsp_bl_tu102[];
 #define GSP_BL_TU102_SIZE       0x00000300UL   /* image 768B = code 0x200 + data 0x100 */
-#define GSP_BL_TU102_CODE_SIZE  0x00000200UL   /* blImgHeader.blCodeSize (只装 code) */
+#define GSP_BL_TU102_CODE_SIZE  0x00000200UL   /* blImgHeader.blCodeSize (code only) */
 #define GSP_BL_TU102_START_TAG  0x000000FDUL   /* blStartTag (BOOTVEC = tag<<8 = 0xfd00) */
 
 /* ==== GSP Falcon2/BROM registers + FWSEC constants (boot-rom params) ==== */
@@ -487,39 +489,39 @@ extern const UINT8 gsp_bl_tu102[];
 #define FWSEC_CMD_FRTS          0x15           /* DMEM_MAPPER_V3_CMD_FRTS */
 #define FWSEC_SIG_SIZE          0x180
 
-/* ==== 40HX (TU106) FWSEC 装载常量（v66 40HX 实测；50HX blob 同几何，extract_fwsec.py 验证） ==== */
+/* ==== 40HX (TU106) FWSEC load constants (v66 40HX real measurement; 50HX blob has the same geometry, extract_fwsec.py verified) ==== */
 #define FW50_CODE_SIZE          0x00009A00UL   /* imemLoad */
-#define FW50_DATA_OFF           0x00009A00UL   /* blob 内 data 起点 */
+#define FW50_DATA_OFF           0x00009A00UL   /* data start inside the blob */
 #define FW50_DMEM_SIZE          0x000003F0UL   /* dmemLoad */
 #define FW50_BLOB_SIZE          0x00009DF0UL   /* code+data */
-#define FW50_IFACE_OFF          0x000000E0UL   /* data 内 interface header */
+#define FW50_IFACE_OFF          0x000000E0UL   /* interface header inside data */
 #define FW50_MAPPER_OFF         0x00000360UL   /* DMEMMAPPER v3 (id4 entry) */
 #define FW50_CMDIN_OFF          0x000003B0UL   /* cmd_in_buffer */
 #define FW50_FRTS_OFFSET        0x27FE00000ULL /* frtsOffset (10GB FB；live dmesg WPR=027fee00:027fe000) */
 #define FW50_WPR2_LO_UP         0x027FE000UL
 #define FW50_WPR2_HI_UP         0x027FEE00UL
-/* v68: 40HX FWSEC desc (V2 @0x3ec28) 真值 — Turing 是 NS+SEC 分段装载,
- * 不是 GA102 式整块 SEC=1 DMA:
+/* v68: real values for the 40HX FWSEC descriptor (V2 @0x3ec28) - on Turing it is an NS+SEC
+ * split-segment load, not a whole-block SEC=1 DMA like GA102:
  *   +0x18 imemLoad=0x9a00  +0x20 imemSecBase=0x400  +0x24 imemSecSize=0x9600
  *   +0x30 dmemLoad=0x3f0   +0x34 dmemOff=0x9a00     +0x10 iface_off=0xe0
- * image 内 code = [NS 0x0..0x400][SEC 0x400..0x9a00] 紧挨;
- * 装载到 IMEM: NS@0 (sec=0) → SEC@0x400 (sec=1), 每 256B 打 IMEMT tag
- * (TU102 驱动 s_prepareHsFalconDirect / s_imemCopyTo_TU102 同语义). */
-#define FW50_NS_SIZE            0x00000400UL   /* image[0..0x400) NS 段 */
-#define FW50_SEC_BASE           0x00000400UL   /* secure 段 IMEM/镜像起点 */
-#define FW50_SEC_SIZE           0x00009600UL   /* image[0x400..0x9a00) SEC 段 */
-#define FW50_TAG_NS             0x00000000UL   /* NS tag 起点 (目标>>8) */
-#define FW50_TAG_SEC            0x00000004UL   /* SEC tag 起点 (0x400>>8) */
+ * Inside the image: code = [NS 0x0..0x400][SEC 0x400..0x9a00] laid back-to-back;
+ * Loaded to IMEM: NS@0 (sec=0) -> SEC@0x400 (sec=1), tag each 256B with IMEMT
+ * (same semantics as the TU102 driver s_prepareHsFalconDirect / s_imemCopyTo_TU102). */
+#define FW50_NS_SIZE            0x00000400UL   /* image[0..0x400) NS segment */
+#define FW50_SEC_BASE           0x00000400UL   /* secure segment IMEM / image start */
+#define FW50_SEC_SIZE           0x00009600UL   /* image[0x400..0x9a00) SEC segment */
+#define FW50_TAG_NS             0x00000000UL   /* NS tag start (target>>8) */
+#define FW50_TAG_SEC            0x00000004UL   /* SEC tag start (0x400>>8) */
 
-/* v70: WITH_LOADER 装载常量 (对照驱动 s_setupLoader/s_prepareHsFalconWithLoader)
- *   GSP IMEM 顶部装载 generic BL (tag=0xfd → BOOTVEC=0xfd00, 256B 对齐);
- *   BL DMEM DESC (RM_FLCN_BL_DMEM_DESC, 4B-align, sizeof=0x54) 拷 DMEM 0x0;
- *   ctxDma=4 → TRANSCFG(4) = GSP FBIF base(0x600) + 4*4 = 0x610 */
+/* v70: WITH_LOADER load constants (matches driver s_setupLoader / s_prepareHsFalconWithLoader)
+ *   Load generic BL at the top of GSP IMEM (tag=0xfd -> BOOTVEC=0xfd00, 256B alignment);
+ *   Copy BL DMEM DESC (RM_FLCN_BL_DMEM_DESC, 4B-align, sizeof=0x54) to DMEM 0x0;
+ *   ctxDma=4 -> TRANSCFG(4) = GSP FBIF base(0x600) + 4*4 = 0x610 */
 #define GSP_HWCFG               (GSP_BASE + 0x108)   /* NV_PFALCON_FALCON_HWCFG */
 #define GSP_FBIF_TRANSCFG4      (GSP_BASE + 0x610)   /* TRANSCFG(dmaIdx=4) */
 #define BL_DESC_SIZE            0x00000054UL   /* sizeof(RM_FLCN_BL_DMEM_DESC) */
-#define BL_DESC_DMEM_LOAD_OFF   0x00000000UL   /* desc 拷 DMEM 偏移 (驱动硬编码 0) */
-/* BL DMEM DESC 字段偏移 (4B-align u64@0x24/0x40): */
+#define BL_DESC_DMEM_LOAD_OFF   0x00000000UL   /* desc copy-DMEM offset (driver hard-codes 0) */
+/* BL DMEM DESC wordsegmentoffset (4B-align u64@0x24/0x40): */
 #define BL_DESC_CTXDMA          0x20
 #define BL_DESC_CODEDMA_LO      0x24
 #define BL_DESC_CODEDMA_HI      0x28
@@ -1844,16 +1846,16 @@ fwsec_boot_gsp(UINT64 fwsecPhys)
 }
 
 /* ==== v66/v68: 40HX (TU106) 原生 FWSEC HS-boot on GSP → FRTS → WPR2 up ====
- * 对照驱动 s_prepareForFwsec_TU102 + kgspExecuteFwsec (frts_tu102.c):
+ * 对照driver s_prepareForFwsec_TU102 + kgspExecuteFwsec (frts_tu102.c):
  *  GSP kflcnReset → patch data(iface@0xe0 → DMEMMAPPER@0x360 → cmd_in@0x3b0,
- *  init_cmd=0x15) → 端口装载 IMEM NS(0x400)+SEC(0x9600@0x400, TU102 语义) →
+ *  init_cmd=0x15) → portload IMEM NS(0x400)+SEC(0x9600@0x400, TU102 语义) →
  *  BROM(PARAADDR= sig DMEM 址) → BOOTVEC=0 → STARTCPU → poll WPR2.
- * v70: 装载改 WITH_LOADER — FWSEC 是 WITH_LOADER 型 ucode (驱动
+ * v70: load改 WITH_LOADER — FWSEC 是 WITH_LOADER 型 ucode (driver
  * kernel_gsp_fwsec.c:741 bootType=WITH_LOADER), secure code 必须由 generic
- * falcon BL (bindata sec2_bl_gp10x, 768B) 从 host 内存 DMA 拉进 secure IMEM.
- * v68/v69 端口写 NS+SEC (DIRECT 语义) 与 v66/v67 DMA SEC=1 在 TU106 上
- * secure IMEM 全 scrub 被实机证伪 — host 无 secure 写权限, BL 有.
- * 40HX FWSEC sig 位置假设 data@0x10 (prod 真值/dbg 0xff 填充; 0x180=RSA3K). */
+ * falcon BL (bindata sec2_bl_gp10x, 768B) 从 host memory DMA 拉进 secure IMEM.
+ * v68/v69 port写 NS+SEC (DIRECT 语义) 与 v66/v67 DMA SEC=1 在 TU106 上
+ * secure IMEM 全 scrub 被实机证伪 — host 无 secure 写permission, BL 有.
+ * 40HX FWSEC sig position假设 data@0x10 (prod 真值/dbg 0xff padding; 0x180=RSA3K). */
 static BOOLEAN
 fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
 {
@@ -1868,10 +1870,10 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
     Print(L"\n--- v66: 40HX FWSEC HS-boot on GSP (blob 0x9a00+0x3f0) ---\n");
 
     /* 1. kflcnReset(GSP): ENGINE reset → BCR=FALCON(0x0) → RM=chipId0(40HX=
-     *    0x162000A1). IRQMSET=0 同 E1 BL 装载.
-     *    Turing 无显式 core switch (kflcnSwitchToFalcon_TU102 仅软状态),
-     *    reset 后即 FALCON 模式; BCR 1=RISCV 是 GA102 语义 — TU102 驱动在
-     *    FWSEC 装载前不切核, 故写 0x0 (FALCON). 读回恒 0x0 属正常. */
+     *    0x162000A1). IRQMSET=0 同 E1 BL load.
+     *    Turing 无显式 core switch (kflcnSwitchToFalcon_TU102 仅软status),
+     *    reset 后即 FALCON mode; BCR 1=RISCV 是 GA102 语义 — TU102 driver在
+     *    FWSEC load前不切核, 故写 0x0 (FALCON). 读回恒 0x0 属正常. */
     Print(L"fwsec50: kflcnReset(GSP)...\n");
     mmio_write32(0x110080, 0x0);          /* IRQMSET=0 (E1 trace) */
     falcon_wait_reset_ready(GSP_HWCFG2);
@@ -1894,7 +1896,7 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
     }
 
     /* 2. patch data: mapper.init_cmd=FRTS(0x15), cmd_in = readVbiosDesc +
-     *    frtsRegionDesc(40HX 8GB frtsOffset) — 同驱动 s_vbiosPatchInterfaceData */
+     *    frtsRegionDesc(40HX 8GB frtsOffset) — 同driver s_vbiosPatchInterfaceData */
     mapper = (UINT32 *)(dmem + FW50_MAPPER_OFF);
     c = (UINT32 *)(dmem + FW50_CMDIN_OFF);
     Print(L"fwsec50: data iface@0x%x hdr={%d,%d,%d,%d} mapper@0x%x "
@@ -1904,8 +1906,8 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
           FW50_MAPPER_OFF, mapper[0],
           (UINT16)((mapper[0]>>16) & 0xFFFF),
           mapper[2], mapper[3]);
-    /* 若实测 mapper 布局偏移与常量不符（mapper[2]=cmd_in_off 非 0x3b0），
-     * 则按 mapper 自述的 cmd_in_buffer_offset 重定位（驱动式） */
+    /* 若实测 mapper layoutoffset与constant不符（mapper[2]=cmd_in_off 非 0x3b0），
+     * 则按 mapper 自述的 cmd_in_buffer_offset 重定bit（driver式） */
     if (mapper[2] < FW50_DMEM_SIZE && mapper[2] != FW50_CMDIN_OFF) {
         Print(L"fwsec50: mapper.cmd_in_off=0x%x (!=0x3b0) — 用 mapper 值\n",
               mapper[2]);
@@ -1925,10 +1927,10 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
           mapper[11], c[8], FW50_FRTS_OFFSET);
 
     /* 3. kflcnDisableCtxReq + TRANSCFG (host DMA 到 falcon 需要):
-     *    v70 BL 用 ctxDma=4 (PHYS_SYS_NCOH, BL 固件固定) → TRANSCFG(4).
-     *    0x5 = COHERENT_SYSMEM(1) | MEM_TYPE_PHYSICAL(bit2) — 同驱动
-     *    s_setupLoaderAperture(ADDR_SYSMEM+CACHED); v66 DMA 已用同值验证
-     *    可 DMA 读 >4GB host 内存 (fwsecPhys=0x11982c000). */
+     *    v70 BL 用 ctxDma=4 (PHYS_SYS_NCOH, BL firmware固定) → TRANSCFG(4).
+     *    0x5 = COHERENT_SYSMEM(1) | MEM_TYPE_PHYSICAL(bit2) — 同driver
+     *    s_setupLoaderAperture(ADDR_SYSMEM+CACHED); v66 DMA 用同值verify
+     *    可 DMA 读 >4GB host memory (fwsecPhys=0x11982c000). */
     data = mmio_read32(GSP_FBIF_CTL);
     data |= (1 << 7);
     mmio_write32(GSP_FBIF_CTL, data);
@@ -1942,11 +1944,11 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
           mmio_read32(GSP_FBIF_CTL), mmio_read32(GSP_FBIF_TRANSCFG4),
           mmio_read32(GSP_DMACTL));
 
-    /* 4. v70 WITH_LOADER — TU102 FWSEC 权威装载 (kernel_gsp_fwsec.c:741
+    /* 4. v70 WITH_LOADER — TU102 FWSEC 权威load (kernel_gsp_fwsec.c:741
      *    bootType=WITH_LOADER; s_setupLoader + s_prepareHsFalconWithLoader):
-     *    FWSEC code/data 留在 host 内存, 由 generic falcon BL (768B, ns) 在
-     *    secure 上下文里 DMA 拉进 IMEM — host 直写 secure IMEM (v66-v69 端口
-     *    SECURE / DMA SEC=1) 全 scrub 已被实机证伪, 此路不再走.
+     *    FWSEC code/data 留在 host memory, 由 generic falcon BL (768B, ns) 在
+     *    secure context里 DMA 拉进 IMEM — host 直写 secure IMEM (v66-v69 port
+     *    SECURE / DMA SEC=1) 全 scrub 被实机证伪, 此路不再走.
      *    (a) BL DMEM DESC (RM_FLCN_BL_DMEM_DESC, 0x54B, 4B-align) → DMEM 0x0
      *    (b) generic BL code (0x200B) → GSP IMEM 顶 (s_setupLoader 公式),
      *        tag=blStartTag(0xfd), BOOTVEC=0xfd00
@@ -1976,17 +1978,17 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
               L" data=0x%llx(0x%x)\n",
               fwsecPhys, FW50_NS_SIZE, FW50_SEC_SIZE, dataPhys, FW50_DMEM_SIZE);
 
-        /* (a) BL DMEM DESC → DMEM 0x0 (AINCW 端口写) */
+        /* (a) BL DMEM DESC → DMEM 0x0 (AINCW port写) */
         mmio_write32(GSP_BASE + 0x1C0, (BL_DESC_DMEM_LOAD_OFF) | (1u << 24));
         for (i = 0; i < BL_DESC_SIZE / 4; i++)
             mmio_write32(GSP_BASE + 0x1C4, d[i]);
         __asm__ volatile("wbinvd" ::: "memory");
         mmio_write32(GSP_BASE + 0x1C0, 0);
 
-        /* (b) generic BL code → IMEM 顶. 驱动 s_setupLoader 公式:
+        /* (b) generic BL code → IMEM 顶. driver s_setupLoader 公式:
          *     imemSizeBlk = HWCFG.IMEM_SIZE[8:0] (GSP IMEM block 数, 256B/blk)
-         *     imemDstBlk  = imemSizeBlk - blCodeSize/256; 装载 @imemDstBlk<<8
-         *     tag = blStartTag 起 (0xfd), BOOTVEC = 0xfd00 (BL 固件编译期). */
+         *     imemDstBlk  = imemSizeBlk - blCodeSize/256; load @imemDstBlk<<8
+         *     tag = blStartTag 起 (0xfd), BOOTVEC = 0xfd00 (BL firmwarecompile期). */
         imemSizeBlk = mmio_read32(GSP_HWCFG) & 0x1FF;
         imemDstBlk  = imemSizeBlk - (GSP_BL_TU102_CODE_SIZE / 256);
         blDstAddr   = imemDstBlk << 8;
@@ -2015,7 +2017,7 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
         __asm__ volatile("wbinvd" ::: "memory");
         mmio_write32(GSP_BASE + 0x180, 0);
 
-        /* (c) readback: BL[0] 落位 + desc.ctxDma 落位 */
+        /* (c) readback: BL[0] 落bit + desc.ctxDma 落bit */
         mmio_write32(GSP_BASE + 0x180, blDstAddr);
         v = mmio_read32(GSP_BASE + 0x184);
         Print(L"fwsec50: rb IMEM[0x%x]=0x%08x (exp BL[0]=0x%08x)%s\n",
@@ -2029,7 +2031,7 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
         mmio_write32(GSP_BASE + 0x1C0, 0);
     }
 
-    /* 5. BOOTVEC = blStartTag<<8 (BL 自定位) + STARTCPU.
+    /* 5. BOOTVEC = blStartTag<<8 (BL 自定bit) + STARTCPU.
      *    无 BROM params (WITH_LOADER 无 PARAADDR/ENGIDMASK/ucodeId 语义 —
      *    kgspExecuteHsFalcon_TU102 仅 prepare+mailbox+start). */
     mmio_write32(GSP_BOOTVEC, blBootVec);
@@ -2071,7 +2073,7 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
         Print(L"\n");
     }
 
-    /* 7. poll WPR2 → FRTS 成功则 up；读 GSP cpu/dbg/scratch 判失败原因 */
+    /* 7. poll WPR2 → FRTS succeeded则 up；读 GSP cpu/dbg/scratch 判failed原因 */
     for (i = 0; i < 5000; i++) {
         UINT32 lo = mmio_read32(REG_PFB_MMU_WPR2_LO);
         UINT32 hi = mmio_read32(REG_PFB_MMU_WPR2_HI);
@@ -2083,7 +2085,7 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
         }
         if ((i % 500) == 0) {
             UINT32 vIM, vD;
-            /* BL DMA 成功的判据: IMEM[0]=FWSEC ns code[0], DMEM[0x10]=data sig */
+            /* BL DMA succeeded的判据: IMEM[0]=FWSEC ns code[0], DMEM[0x10]=data sig */
             mmio_write32(GSP_BASE + 0x180, 0);
             vIM = mmio_read32(GSP_BASE + 0x184);
             mmio_write32(GSP_BASE + 0x1C0, 0x10);
@@ -2574,26 +2576,26 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
  * «труп» и читали чужой 0x91. Новый порядок: BL(GSP) → FWSEC(GSP) → WPR2 →
  * ResetIntoRiscv+libos args → booter_load_v67 на ЖИВОМ SEC2 (поллинг v2.69). */
 /* =====================================================================
- * v56: TU102 BOOT_DIRECT booter loader —— 完全按 OpenRM 610.43.03 驱动
+ * v56: TU102 BOOT_DIRECT booter loader —— 完全按 OpenRM 610.43.03 driver
  * （kernel_gsp_booter_tu102.c / kernel_gsp_falcon_tu102.c）复刻。
  *
- * 关键点（与 90HX/GA102 的 DMA 装载完全不同！）：
+ * 关键点（与 90HX/GA102 的 DMA load完全不同！）：
  *  - Turing 的 SEC2/GSP falcon 是 **BOOT_DIRECT**（kgspExecuteHsFalcon_TU102
- *    断言 !bBootFromHs；s_allocateUcodeFromBinArchive 选 BOOT_DIRECT 分支），
- *    装载走 **IMEMC/IMEMD + IMEMT 块 tag 端口**（不是 DMATRF DMA）。
+ *    断言 !bBootFromHs；s_allocateUcodeFromBinArchive 选 BOOT_DIRECT branch），
+ *    load走 **IMEMC/IMEMD + IMEMT block tag port**（不是 DMATRF DMA）。
  *  - s_prepareHsFalconDirect()：
  *      kflcnDisableCtxReq (FBIF_CTL bit7 + DMACTL=0)
  *      IMEM NS : dst=0x000 src=image+imemNsPa(0x0)   size=imemNsSize(0x100)  SEC=0 tag=0
  *      IMEM SEC: dst=0x100 src=image+imemSecPa(0x100) size=imemSecSize(0x8400) SEC=1 tag=1
- *      DMEM    : dst=0     src=image+dataOffset(0x8500) size=dmemSize(0x6200)（签名已 patch）
+ *      DMEM    : dst=0     src=image+dataOffset(0x8500) size=dmemSize(0x6200)（signature patch）
  *      **BOOTVEC = 0**（GA102 才是 0x100 —— v55 用错值！）
  *  - kflcnReset_TU102 写 RM = pGpu->chipId0；chipId0 = 原始 NV_PMC_BOOT_0
  *    （gpu_mgr.c: osDevReadReg032(NV_PMC_BOOT_0)），40HX = 0x166000A1，
  *    不是 GA102 的 0xb72000a1（v55 也用错值）。
- *  - 启动：MAILBOX0/1 = WPR meta 物理地址，STARTCPU=2，等 HALT，mbox0==0 成功。
+ *  - start：MAILBOX0/1 = WPR meta physicaladdress，STARTCPU=2，等 HALT，mbox0==0 succeeded。
  * ===================================================================== */
 
-/* IMEM 端口装载：AINCW=1 + 每 256B(64 word) 打一次 IMEMT tag */
+/* IMEM portload：AINCW=1 + 每 256B(64 word) 打一次 IMEMT tag */
 static void
 u40x_imem_write(UINT32 dst, BOOLEAN sec, const UINT32 *src,
                 UINT32 sizeBytes, UINT32 virtAddr)
@@ -2613,7 +2615,7 @@ u40x_imem_write(UINT32 dst, BOOLEAN sec, const UINT32 *src,
     }
 }
 
-/* DMEM 端口装载：AINCW=1，连续写 DMEMD */
+/* DMEM portload：AINCW=1，连续写 DMEMD */
 static void
 u40x_dmem_write(UINT32 dst, const UINT32 *src, UINT32 sizeBytes)
 {
@@ -2628,13 +2630,13 @@ u40x_dmem_write(UINT32 dst, const UINT32 *src, UINT32 sizeBytes)
 #define SEC2_RESET_PLM_REG      0x008403C4UL  /* SEC2 RESET_PRIV_LEVEL_MASK (cyridd CMP40_SEC2_RESET_PLM) */
 
 /* =====================================================================
- * v58（参考 cmpunlocker 0001 patch 后重写装载器入口）：
- *   驱动 exploit 运行在 FWSEC 后 **已经 halted 的 SEC2** 上，_kgspCmp40
- *   ExecuteBooterFreshMeta → kgspExecuteBooterLoad 的 native-probe 路径
+ * v58（参考 cmpunlocker 0001 patch 后重写load器entry）：
+ *   driver exploit run在 FWSEC 后 **经 halted 的 SEC2** 上，_kgspCmp40
+ *   ExecuteBooterFreshMeta → kgspExecuteBooterLoad 的 native-probe path
  *   **不再做 engine reset**（reset 会把 RESET_PLM 从 0xff 改成 0x8f 且被
- *   驱动判死）。因此 v58 先试 attempt A = 不复位直接端口装载+启动（驱动同款）；
+ *   driver判死）。因此 v58 先试 attempt A = 不复bit直接portload+start（driver同款）；
  *   若未得 mbox0==0 再 attempt B = engine reset 版（v56/57 同款）兜底。
- *   前置探测打印 RESET_PLM/WPR2，对照驱动 CMP40_STOCKFLOW_V551 判定。
+ *   前置探测print RESET_PLM/WPR2，对照driver CMP40_STOCKFLOW_V551 判定。
  * ===================================================================== */
 static EFI_STATUS
 booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
@@ -2647,9 +2649,9 @@ booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
     UINTN i;
 
     Print(L"\n=== v67: TU102 BOOT + 40HX FWSEC (BCR=1, port-load code) ===\n");
-    /* v60: pre 探测逐寄存器单发读（每行只读已证安全的寄存器；读挂时日志
-     * 能精确定位）。RESET_PLM(0x8403C4) 在 kill-GFW 后的裸 SEC2 上读取会
-     * 挂死（v59 实测：日志停在调用点，pre 参数求值阶段卡死）——故从 pre
+    /* v60: pre 探测逐register单发读（每行只读证security的register；读挂时log
+     * 能精确定bit）。RESET_PLM(0x8403C4) 在 kill-GFW 后的裸 SEC2 上read会
+     * 挂死（v59 实测：log停在call点，pre parameter求值阶segment卡死）——故从 pre
      * 与 RESULT 探测中移除，改由 attempt 后 WPR2/SS 判定。 */
     Print(L"tu102 pre: hwcfg2...\n");
     data = mmio_read32(SEC2_HWCFG2);
@@ -2667,8 +2669,8 @@ booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
     /* v62: 尝试把 WPR2 拉 up（40HX 8GB 值，log53 真解 dmesg：
      * POST_FWSEC_PRE_GSP_ENTRY WPR=01ffee00:01ffe000）。90HX 参考
      * (unlock_v2.c v2.16) booter 前显式写 WPR2=frtsOffset；
-     * REFERENCE_FLOW §3.1 推论 1：booter 可能校验 WPR2 后退出(=0x91)。
-     * host 直写可能被锁——写后读回验证并打印结果。 */
+     * REFERENCE_FLOW §3.1 推论 1：booter 可能verify WPR2 后exit(=0x91)。
+     * host 直写可能被lock——写后读回verify并print结果。 */
     Print(L"tu102 v62: set WPR2 up (lo=0x01ffe000 hi=0x01ffee00)...\n");
     mmio_write32(REG_PFB_MMU_WPR2_LO, 0x01ffe000u);
     mmio_write32(REG_PFB_MMU_WPR2_HI, 0x01ffee00u);
@@ -2687,7 +2689,7 @@ booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
         Print(L"\n--- tu102 attempt %d/%d: %s ---\n", (INTN)attempt + 1, 2,
               bReset ? L"engine-reset" : L"no-reset (driver-style)");
 
-        /* 准备引擎（A: 不加复位——驱动 exploit 用 FWSEC 后 halted 的引擎；
+        /* 准备engine（A: 不加复bit——driver exploit 用 FWSEC 后 halted 的engine；
          *  B: kflcnReset_TU102 = pre-wait→reset→scrub wait→BCR=0→RM=chipId0） */
         if (bReset) {
             Print(L"tu102: B-reset: pre-wait hwcfg2...\n");
@@ -2727,14 +2729,14 @@ booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
         mmio_write32(SEC2_FBIF_CTL, data);
         mmio_write32(SEC2_DMACTL, 0);
 
-        /* IMEM/DMEM 端口装载（签名已由主线 patch 到 image+0x8700 = DMEM+0x200） */
+        /* IMEM/DMEM portload（signature由主线 patch 到 image+0x8700 = DMEM+0x200） */
         Print(L"tu102: port load IMEM ns+sec + DMEM...\n");
         u40x_imem_write(0x000u, FALSE, (const UINT32 *)(img + 0x0u), 0x100u, 0x0u);
         u40x_imem_write(0x100u, TRUE, (const UINT32 *)(img + 0x100u), 0x8400u, 0x100u);
         u40x_dmem_write(0x0u, (const UINT32 *)(img + 0x8500u), 0x6200u);
         __asm__ volatile("wbinvd" ::: "memory");
 
-        /* readback 校验 */
+        /* readback verify */
         mmio_write32(SEC2_IMEMC0, 0x0u);
         rbNs = mmio_read32(SEC2_IMEMD0);
         mmio_write32(SEC2_IMEMC0, 0x100u | (1u << 28));
@@ -2747,10 +2749,10 @@ booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
 
         /* BOOTVEC=0（TU102 BOOT_DIRECT） */
         /* v61: meta 直传 >4GB 原址（wprMetaPhys），**不做 low-copy**。
-         * 驱动 kgspExecuteBooterLoad_TU102: mailbox0/1 = LO32/HI32(sysmemAddr)
-         * = 64 位寻址，meta 由 RM memdesc 分配在 >4GB（实测 0x110BB0000）。
-         * v55 的 cmp90_meta_low(<4GB) 是 90HX/GA102 老假设；TU102 锁卡上
-         * <4GB 读反而被锁（869 行 v2.63 注释：exit 0x91）。 */
+         * driver kgspExecuteBooterLoad_TU102: mailbox0/1 = LO32/HI32(sysmemAddr)
+         * = 64 bit寻址，meta 由 RM memdesc allocate在 >4GB（实测 0x110BB0000）。
+         * v55 的 cmp90_meta_low(<4GB) 是 90HX/GA102 老假设；TU102 lock卡上
+         * <4GB 读反而被lock（869 行 v2.63 comment：exit 0x91）。 */
         Print(L"tu102: mailbox=wprMetaPhys>4G (no low copy)...\n");
         metaLow = wprMetaPhys;
         Print(L"tu102: BOOTVEC=0, mailbox0=0x%08x mailbox1=0x%08x, STARTCPU...\n",
@@ -2763,7 +2765,7 @@ booter_load_tu102_direct(UINT64 wprMetaPhys, UINT64 ucodePhys)
         Print(L"tu102: started; hold 3s WITHOUT reg reads (v57 lesson)\n");
         uefi_call_wrapper(BS->Stall, 1, 3000000);
 
-        /* 稀疏单发读（每步先打点再读——读挂时日志能定位） */
+        /* 稀疏单发读（每步先打点再读——读挂时log能定bit） */
         Print(L"tu102: read#1 cpu...\n");
         cpu = mmio_read32(SEC2_CPUCTL);
         Print(L"tu102:   cpu=0x%x\n", cpu);
@@ -4512,7 +4514,7 @@ build_wpr_meta(GspFwWprMeta *m, UINT64 elfPhys, UINT64 elfSize,
      * выравнивания offset — у драйвера между heap-end (0x27ad00000) и
      * gspFwOffset (0x27ada0000) гэп 0xA0000; наш перечет раздувал heap до
      * 0x7fa0000 и ломал раскладку.
-     * v62: heap 依赖 FB 大小 — 0x7F00000 是 10GB(CMP90HX) 实测；40HX 8GB
+     * v62: heap 依赖 FB size — 0x7F00000 是 10GB(CMP90HX) 实测；40HX 8GB
      * 的 log53 真解 dmesg 显示 gspFwHeap=0x1f7900000+0x6900000 → 8GB 卡
      * heap = 0x6900000。按 fbSize 选值。 */
     m->gspFwHeapSize   = (fbSize == 0x280000000ULL) ? 0x7F00000ULL
@@ -5134,10 +5136,10 @@ find_cmp90hx(void)
  * (BDS boots Windows with NO POST; the unlock survives).
  * Every failure path also returns to firmware — release never resets.
  * ============================================================
- * v55: 上面这份 90HX 全流程被 #if U40X_LEGACY_FULL 收编（默认关闭）。
- * 40HX/TU106 实机主线改用文件末尾重写的 efi_main（DIRECT_SEC2：
- * 黑盒版同款枚举/BAR + 跳过 GSP-BL/FWSEC/磁盘预载/诊断扫描，直连
- * SEC2 booter，几何已按 TU102 bindata 修正）。见文件尾部。 */
+ * v55: 上面这份 90HX 全flow被 #if U40X_LEGACY_FULL 收编（默认close）。
+ * 40HX/TU106 实机主线改用file末尾重写的 efi_main（DIRECT_SEC2：
+ * 黑盒版同款enum/BAR + skip GSP-BL/FWSEC/磁盘预载/诊断扫描，直连
+ * SEC2 booter，几何按 TU102 bindata 修正）。见filetail。 */
 #if defined(U40X_LEGACY_FULL)
 EFI_STATUS EFIAPI
 efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
@@ -5215,7 +5217,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     {
         BOOLEAN have2 = FALSE;
     #ifndef DIRECT_SEC2
-    /* 90HX: gen2 fire 决策 — 40HX (DIRECT_SEC2) 跳过 */
+    /* 90HX: gen2 fire 决策 — 40HX (DIRECT_SEC2) skip */
         UINTN gi = mc_var_get(L"CMP90G2", &have2);
         if (have2 && gi <= RJ16_N && g_mcCount > 0) {
             UINT32 saveBar;
@@ -6242,36 +6244,36 @@ done:
 #endif
     return EFI_SUCCESS;
 }
-#endif /* U40X_LEGACY_FULL —— 上面的 90HX 全流程到此结束；以下是 v55 40HX DIRECT 主线 */
+#endif /* U40X_LEGACY_FULL —— 上面的 90HX 全flow到此结束；以下是 v55 40HX DIRECT 主线 */
 
 /* =====================================================================
  * v55：40HX (TU106, 10de:1f0b) DIRECT-SEC2 主线（重写，2026-09-03）
  * ---------------------------------------------------------------------
- * 为什么黑盒混合版（CMP50HX-WindowsUnlock-v0.2.1，main.c+core）在这块
- * 主板上能一路跑完枚举/BAR/SBR/booter 执行器，而本源码版此前不行：
- *   1) 配置空间地址编码不同 —— 混合版 rb->Pci.Read 用
- *      EFI_PCI_ADDRESS = bus<<24|dev<<16|fn<<8|reg（本主板固件接受）；
+ * 为什么黑盒hybrid版（CMP50HX-WindowsUnlock-v0.2.1，main.c+core）在这block
+ * 主板上能一路跑完enum/BAR/SBR/booter execute器，而本source码版此前不行：
+ *   1) configspaceaddressencode不同 —— hybrid版 rb->Pci.Read 用
+ *      EFI_PCI_ADDRESS = bus<<24|dev<<16|fn<<8|reg（本主板firmware接受）；
  *      unlock_v2 移植版沿用 GA102 工程的 bus<<20|dev<<15|fn<<12|reg，
- *      在这块主板上读到的根本不是同一设备（find/BAR 全乱）。
- *   2) BAR0 未先 command|=MEMORY|BUS_MASTER 就 MMIO 直读 → 寄存器全 0。
- *   3) 移植版主流程混入大量 90HX 专属阶段（NVRAM fire 决策、bootmgfw
+ *      在这block主板上读到的根本不是同一device（find/BAR 全乱）。
+ *   2) BAR0 未先 command|=MEMORY|BUS_MASTER 就 MMIO 直读 → register全 0。
+ *   3) 移植版主flow混入大量 90HX 专属阶segment（NVRAM fire 决策、bootmgfw
  *      磁盘预载、probe/sweep/DIAG 全扫、GSP-BL+FWSEC(GA102) 前置），
- *      在本板上要么挂死要么执行语义不对的 GA102 固件。
+ *      在本板上要么挂死要么execute语义不对的 GA102 firmware。
  *   4) booter 几何：原移植把 GA102 的 imem 0x8900@+0x100 / data
  *      0x8A00/0x6200 / ucodeId=3 / hsSig=0x10 套在 TU102(nv616) 的
- *      0xE700 blob 上（data 读到文件尾外）。真实值见 BOOTER_* 宏。
+ *      0xE700 blob 上（data 读到file尾外）。真实值见 BOOTER_* macro。
  *
- * 本主线 = 黑盒混合版（找卡/BAR/读 BOOT0）+ DIRECT_SEC2（不跑 GSP
+ * 本主线 = 黑盒hybrid版（找卡/BAR/读 BOOT0）+ DIRECT_SEC2（不跑 GSP
  * BL/FWSEC/磁盘预载，直接 SEC2 booter 注入），几何用 TU102 真值。
- * 编译：见 tools/unlock40x/build40x.sh（-DDIRECT_SEC2 -DRELEASE_BUILD
+ * compile：见 tools/unlock40x/build40x.sh（-DDIRECT_SEC2 -DRELEASE_BUILD
  * 不开 U40X_LEGACY_FULL、不开 EFI_FUNCTION_WRAPPER）。
  * ===================================================================== */
 
-/* 配置空间地址：UEFI 规范布局（=混合版 uefi_min.h 的 EFI_PCI_ADDRESS） */
+/* configspaceaddress：UEFI specificationlayout（=hybrid版 uefi_min.h 的 EFI_PCI_ADDRESS） */
 #define U40X_CFG_ADDR(bus, dev, fn, reg) \
     ((((UINT64)(UINTN)(bus)) << 24) | (((UINT64)(UINTN)(dev)) << 16) | \
      (((UINT64)(UINTN)(fn)) << 8) | ((UINT64)(reg)))
-/* 紧凑布局（unlock_v2/GA102 工程用；仅找卡第二遍兜底） */
+/* 紧凑layout（unlock_v2/GA102 工程用；仅找卡第二遍兜底） */
 #define U40X_CFG_ADDR_COMPACT(bus, dev, fn, reg) \
     ((((UINT64)(UINTN)(bus)) << 20) | (((UINT64)(UINTN)(dev)) << 15) | \
      (((UINT64)(UINTN)(fn)) << 12) | ((UINT64)(reg)))
@@ -6280,7 +6282,7 @@ static UINT32 u40x_pci_rbdf(UINTN bus, UINTN dev, UINTN fn, UINTN off, INTN enc)
 {
     UINT32 v = 0xFFFFFFFFu;
     UINT64 A;
-    if (enc == 2) {              /* CF8/CFC 直读兜底（与 WinRing0 同路径） */
+    if (enc == 2) {              /* CF8/CFC 直读兜底（与 WinRing0 同path） */
         UINT32 a = 0x80000000u | ((UINT32)bus << 16) |
                    ((UINT32)dev << 11) | ((UINT32)fn << 8) | ((UINT32)off & 0xFCu);
         __asm__ __volatile__("outl %0, %w1" : : "a"(a), "Nd"(0xCF8));
@@ -6291,7 +6293,7 @@ static UINT32 u40x_pci_rbdf(UINTN bus, UINTN dev, UINTN fn, UINTN off, INTN enc)
         return v;
     A = enc ? U40X_CFG_ADDR_COMPACT(bus, dev, fn, off)
             : U40X_CFG_ADDR(bus, dev, fn, off);
-    /* 直调 rb->Pci（黑盒验证：本主板固件只吃直调 + 规范地址） */
+    /* 直调 rb->Pci（黑盒verify：本主板firmware只吃直调 + specificationaddress） */
     if (EFI_ERROR(gRb->Pci.Read(gRb, EfiPciIoWidthUint32, A, 1, &v)))
         v = 0xFFFFFFFFu;
     return v;
@@ -6344,7 +6346,7 @@ static void u40x_pci_wbdf(UINTN bus, UINTN dev, UINTN fn, UINTN off,
                           UINT32 val, INTN enc)
 {
     UINT64 A;
-    if (enc == 2) {              /* CF8/CFC 直写兜底（与 WinRing0 同路径） */
+    if (enc == 2) {              /* CF8/CFC 直写兜底（与 WinRing0 同path） */
         UINT32 a = 0x80000000u | ((UINT32)bus << 16) |
                    ((UINT32)dev << 11) | ((UINT32)fn << 8) | ((UINT32)off & 0xFCu);
         __asm__ __volatile__("outl %0, %w1" : : "a"(a), "Nd"(0xCF8));
@@ -6358,13 +6360,13 @@ static void u40x_pci_wbdf(UINTN bus, UINTN dev, UINTN fn, UINTN off,
     gRb->Pci.Write(gRb, EfiPciIoWidthUint32, A, 1, &val);
 }
 
-/* 找到卡时用的地址编码（0=规范 bus<<24，1=紧凑 bus<<20）——BAR/command
- * 的后续配置读必须沿用同一编码，否则在非规范固件上会读错设备。 */
+/* 找到卡时用的addressencode（0=specification bus<<24，1=紧凑 bus<<20）——BAR/command
+ * 的后续config读必须沿用同一encode，否则在非specificationfirmware上会读错device。 */
 static INTN u40x_enc_found = 0;
 
 /* 找卡：fast-probe（bus 2/1/3/0/4/5）+ 初扫 bus 0..16（AGESA 实测把
- * PEG 槽编到 bus 0x10、核显到 0x30，0..16 已含该极端值）；enc=2(CF8) 全
- * 0..255 兜底。先规范地址(enc=0)再紧凑地址(enc=1)再 CF8(enc=2)。 */
+ * PEG 槽编到 bus 0x10、核显到 0x30，0..16 含该极端值）；enc=2(CF8) 全
+ * 0..255 兜底。先specificationaddress(enc=0)再紧凑address(enc=1)再 CF8(enc=2)。 */
 static int u40x_find_gpu_pass(INTN enc)
 {
     static const UINT8 fastL[][3] = {
@@ -6393,7 +6395,7 @@ static int u40x_find_gpu_pass(INTN enc)
             UINTN maxf = 1;
             UINT32 hdr;
             if (id0 == 0xFFFFFFFFu || (id0 & 0xFFFFu) == 0u)
-                continue;                       /* 空槽先跳过，不再多读 hdr */
+                continue;                       /* 空槽先skip，不再多读 hdr */
             hdr = u40x_pci_rbdf(b, d, 0, 0x0C, enc);
             if (hdr & 0x800000u)    /* multifunction: HT bit7 = dword bit23 */
                 maxf = 8;
@@ -6425,7 +6427,7 @@ static int u40x_find_gpu(void)
             &gEfiPciRootBridgeIoProtocolGuid, NULL, &N, &H);
     if (EFI_ERROR(st)) {
         Print(L"[50HX f] RB LocateHandleBuffer: %r\n", st);
-        N = 0;      /* 拿不到 RB 句柄也继续走 CF8 直读兜底 */
+        N = 0;      /* 拿不到 RB handle也continue走 CF8 直读兜底 */
         H = NULL;
     } else {
         Print(L"[50HX f] %d root bridge(s)\n", (INTN)N);
@@ -6442,13 +6444,13 @@ static int u40x_find_gpu(void)
     }
     if (H)
         uefi_call_wrapper(BS->FreePool, 1, H);
-    /* enc=2: CF8/CFC 端口直读兜底 —— 个别固件的 RootBridgeIo 协议存在
-     * 总线范围限制/地址解析怪癖；legacy conf1 机制在硬件层覆盖 bus 0-255
-     * （Windows 侧 WinRing0 同路径，AGESA 板上实测可达 10:00.0）。 */
+    /* enc=2: CF8/CFC port直读兜底 —— 个别firmware的 RootBridgeIo protocol存在
+     * busrangelimit/address解析怪癖；legacy conf1 机制在hardware层覆盖 bus 0-255
+     * （Windows 侧 WinRing0 同path，AGESA 板上实测可达 10:00.0）。 */
     if (u40x_find_gpu_pass(2))
         return 1;
-    /* 全失败：CF8 只读扫一遍，把可见设备映射写进 50hx_log.txt（≤96 条），
-     * 下次定位“卡到底在不在 PCI 上 / 在哪个 BDF”一目了然。 */
+    /* 全failed：CF8 只读扫一遍，把可见devicemapping写进 50hx_log.txt（≤96 条），
+     * 下次定bit“卡到底在不在 PCI 上 / 在哪个 BDF”一目了然。 */
     {
         UINTN b2, d2, f2, cnt = 0;
         Print(L"[50HX f] diag: CF8 visible devices (VEN:DEV @ BDF):\n");
@@ -6473,7 +6475,7 @@ diag_done: ;
     return 0;
 }
 
-/* BAR0 解码 + command|=MEMORY|BUS_MASTER（黑盒 prepare_pci_resources 简化版） */
+/* BAR0 decode + command|=MEMORY|BUS_MASTER（黑盒 prepare_pci_resources 简化版） */
 static int u40x_enable_bar(void)
 {
     INTN enc = u40x_enc_found;
@@ -6513,12 +6515,12 @@ static int u40x_enable_bar(void)
 static EFI_STATUS u40x_build_dummy_fw(UINT64 *dataPhys, UINT64 *dataSize)
 {
     EFI_STATUS st;
-    /* v63: ELF size 必须 = log53 真解（Linux 40HX 成功 dmesg）：
+    /* v63: ELF size 必须 = log53 真解（Linux 40HX succeeded dmesg）：
      * "40HX GSP_FW: fwOffset=0x1fe200000 size=0x1bfadc8 ..."
      * = linux/firmware/gsp_tu10x.bin .fwimage 尺寸 = 28.9MB 真 GSP-RM。
-     * gspFwOffset = bootBinOffset - elfSize → ELF size 决定整条 WPR 布局；
-     * 旧值 0x5053000(80MB dummy) 让 gspFwOffset/heap 全错位 → booter
-     * 校验 meta 布局失败 → exit 0x91（4166-4169 注释语义）。 */
+     * gspFwOffset = bootBinOffset - elfSize → ELF size 决定整条 WPR layout；
+     * 旧值 0x5053000(80MB dummy) 让 gspFwOffset/heap 全错bit → booter
+     * verify meta layoutfailed → exit 0x91（4166-4169 comment语义）。 */
     UINT64 sz = 0x1bfadc8ULL;    /* 真 GSP-RM ELF 尺寸（log53/gsp_tu10x .fwimage） */
 
     st = alloc_fwsec_buffer((UINTN)((sz + 0xFFF) >> 12), dataPhys);
@@ -6533,7 +6535,7 @@ static EFI_STATUS u40x_build_dummy_fw(UINT64 *dataPhys, UINT64 *dataSize)
     return EFI_SUCCESS;
 }
 
-/* radix-3 页表（root→L1→L2→data，v2.86 教训：booter 要页表非 raw ELF） */
+/* radix-3 page表（root→L1→L2→data，v2.86 教训：booter 要page表非 raw ELF） */
 static EFI_STATUS u40x_build_radix(UINT64 dataPhys, UINT64 dataSize,
                                    UINT64 *tabPhysOut)
 {
@@ -6566,7 +6568,7 @@ static EFI_STATUS u40x_build_radix(UINT64 dataPhys, UINT64 dataSize,
     return EFI_SUCCESS;
 }
 
-/* ===== v55 主入口（DIRECT_SEC2，40HX） ===== */
+/* ===== v55 主entry（DIRECT_SEC2，40HX） ===== */
 EFI_STATUS EFIAPI
 efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
@@ -6596,7 +6598,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         return EFI_NOT_FOUND;
     }
 
-    /* ---------- [2] BAR0 使能 ---------- */
+    /* ---------- [2] BAR0 enable ---------- */
     if (u40x_enable_bar()) {
         Print(L"[50HX] BAR enable failed; abort\n");
         return EFI_DEVICE_ERROR;
@@ -6605,7 +6607,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     u40x_vbios_dump();          /* v65: after BAR enable; -> \50hx_vbios.bin */
 #endif
 
-    /* ---------- [3] BOOT0 芯片校验 ---------- */
+    /* ---------- [3] BOOT0 芯片verify ---------- */
     boot0 = mmio_read32(0x00000000UL);
     Print(L"[50HX] BOOT0=0x%08x (expect arch 0x16<<24 = TU10x)\n", boot0);
     if ((boot0 & 0xFF000000u) != 0x16000000u && boot0 != 0x0FFFFFFFu) {
@@ -6614,7 +6616,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
     dump_regs(L"[v55 boot]");
 
-    /* ---------- [4] 快捷路径：已解锁 / 直写可粘 ---------- */
+    /* ---------- [4] 快捷path：unlock / 直写可粘 ---------- */
     if (is_unlocked()) {
         Print(L"[50HX] already unlocked (SS0/SS1 exact) — skip injection\n");
         goto done;
@@ -6624,7 +6626,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         goto done;
     }
 
-    /* ---------- [5] GFW 状态 + 时间种子 ---------- */
+    /* ---------- [5] GFW status + timeseed ---------- */
     if ((mmio_read32(REG_GFW_BOOT_OK) & 0xFFu) != 0xFFu) {
         Print(L"[50HX] GFW not ready (0x%08x), waiting...\n",
               mmio_read32(REG_GFW_BOOT_OK));
@@ -6639,16 +6641,16 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
     set_gpu_time();
 
-    /* ---------- [6] 载荷/ucode/BL 分配（>4G 高槽，与 unlock_v2 同策略） ---------- */
+    /* ---------- [6] 载荷/ucode/BL allocate（>4G 高槽，与 unlock_v2 同policy） ---------- */
     Status = alloc_fwsec_buffer((V67_SIZE + 0xFFFu) >> 12, &v67Phys);
     if (EFI_ERROR(Status)) { Print(L"[50HX] alloc v67: %r\n", Status); goto done; }
     CopyMem((VOID *)(UINTN)v67Phys, v67_payload_bin, V67_SIZE);
-    /* v61: **不再 low-copy 到 <4GB**。869 行注释（v2.63 实测，锁卡 40HX）：
-     * "booter 从 sysmem 读 WPR meta/V67——<4GB 读取被锁 (exit 0x91)"。
-     * 驱动 TU102 (kgspExecuteBooterLoad_TU102) 用 mailbox0/1 = LO32/HI32
-     * 传 64 位物理地址，meta 本体在 >4GB (驱动 0x110BB0000)。v55 引入的
-     * "签名缓冲 <4G（booter 32 位读）" 是 90HX 老假设，在 TU102 上反了。
-     * v60 实机 mbox0=0x91 可复现 → v67/meta 都在 <4GB，booter 读被锁。 */
+    /* v61: **不再 low-copy 到 <4GB**。869 行comment（v2.63 实测，lock卡 40HX）：
+     * "booter 从 sysmem 读 WPR meta/V67——<4GB read被lock (exit 0x91)"。
+     * driver TU102 (kgspExecuteBooterLoad_TU102) 用 mailbox0/1 = LO32/HI32
+     * 传 64 bitphysicaladdress，meta 本体在 >4GB (driver 0x110BB0000)。v55 引入的
+     * "signaturebuffer <4G（booter 32 bit读）" 是 90HX 老假设，在 TU102 上反了。
+     * v60 实机 mbox0=0x91 可复现 → v67/meta 都在 <4GB，booter 读被lock。 */
     __asm__ volatile("wbinvd" ::: "memory");
     Print(L"[50HX] v67 payload @0x%lx (0x%x B, >4GB)\n", v67Phys, V67_SIZE);
 
@@ -6681,9 +6683,9 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
           wprMetaPhys, radixPhys, ucodePhys, v67Phys, wprMeta->fbSize);
 
     /* ---------- [7.5] v69: 预载探测（必须在任何 engine reset 之前） ----------
-     * log53: FWSEC_COMPLETE_GSP_UNTOUCHED — Linux 成功路径里 FWSEC 由
-     * POST/VBIOS 预载在 GSP secure IMEM，驱动只触发不重装。若 40HX 同样
-     * 预载，则 [8b] 的 code 装载纯属多余（且 SEC 写不入的原因=硬件已锁
+     * log53: FWSEC_COMPLETE_GSP_UNTOUCHED — Linux succeededpath里 FWSEC 由
+     * POST/VBIOS 预载在 GSP secure IMEM，driver只trigger不重装。若 40HX 同样
+     * 预载，则 [8b] 的 code load纯属多余（且 SEC 写不入的原因=hardwarelock
      * 该区）。探测放在 kill GFW 前，对比 kill 后差异。 */
     probe_preload();
 
@@ -6697,7 +6699,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     Print(L"[50HX] WPR2 pre-kill: hi=0x%08x lo=0x%08x\n",
           g_Wpr2HiPreKill, g_Wpr2LoPreKill);
 
-    /* ---------- [8] kill GFW + SEC2 解锁检查 ---------- */
+    /* ---------- [8] kill GFW + SEC2 unlock检查 ---------- */
     gsp_engine_reset();
     uefi_call_wrapper(BS->Stall, 1, 200000);
     {
@@ -6761,9 +6763,9 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     /* ---------- [9] DIRECT_SEC2：SEC2 booter（V67 canary） ---------- */
     sec2_health(L"v55-pre-booter");
     CopyMem((VOID *)(UINTN)ucodePhys, booter_ucode_prod, BOOTER_UCODE_SIZE);
-    /* 驱动装载前把 SIG_PROD(16B AES) 写入 image[PATCH_LOC=0x8700]
-     * (= DMEM[hsSigDmemAddr=0x200])——BROM 验签就从这个 DMEM 位读签名；
-     * 不写则 booter 走验签直接失败。字节取自已解压 bindata
+    /* driverload前把 SIG_PROD(16B AES) write image[PATCH_LOC=0x8700]
+     * (= DMEM[hsSigDmemAddr=0x200])——BROM verify signature就从这个 DMEM bit读signature；
+     * 不写则 booter 走verify signature直接failed。byte取自decompress bindata
      * kgspGetBinArchiveBooterLoadUcode_TU102 ...SIG_PROD.bin。 */
     {
         static const UINT8 u40x_booter_sig_prod[16] = {
@@ -6778,7 +6780,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     Status = booter_load_tu102_direct(wprMetaPhys, ucodePhys);
     Print(L"[50HX] booter_load_tu102_direct returned %r\n", Status);
     if (EFI_ERROR(Status)) {
-        /* v56 fallback：GA102 风格 DMA 路径（v55 用的那套），结果对比用 */
+        /* v56 fallback：GA102 风格 DMA path（v55 用的那套），结果对比用 */
         Print(L"[50HX] fallback: booter_load_v67 (DMA path, GA102-style)...\n");
         Status = booter_load_v67(wprMetaPhys, ucodePhys);
         Print(L"[50HX] booter_load_v67 returned %r\n", Status);
@@ -6787,7 +6789,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     uefi_call_wrapper(BS->Stall, 1, 500000);
     dump_regs(L"[v55 post-booter]");
 
-    /* ---------- [10] 判定 + 清理 ---------- */
+    /* ---------- [10] 判定 + cleanup ---------- */
     {
         UINT32 plm = mmio_read32(REG_FEAT_OVR_PLM);
         UINT32 ss0 = mmio_read32(REG_FEAT_OVR_SM_SPD);
@@ -6802,7 +6804,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             Print(L"[50HX] PLM closed — no booter effect observed\n");
     }
     /* v89: SEC2 Sanitize（cyridd kgspCmp40SanitizeSec2AfterExploit 简版——
-     * 解锁后 SEC2 回冷态：engine reset + MB 清——验证黑屏=非冷态，sanitize 解） */
+     * unlock后 SEC2 回冷态：engine reset + MB 清——verify黑屏=非冷态，sanitize 解） */
     Print(L"[40HX v89] SEC2 sanitize (engine reset + MB clear)...\n");
     {
         UINTN it;
@@ -6825,7 +6827,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         Print(L"[40HX v89] sanitize done cpu=0x%x mbox0=0x%x\n",
               mmio_read32(SEC2_CPUCTL), mmio_read32(SEC2_MAILBOX0));
     }
-    /* 停掉可能的 SEC2 ROP 自旋（写读回；如已死无害） */
+    /* 停掉可能的 SEC2 ROP 自旋（写读回；如死无害） */
     mmio_write32(SEC2_ENGINE, 0x1);
     for (i = 0; i < 16; i++) mmio_read32(SEC2_ENGINE);
     mmio_write32(SEC2_ENGINE, 0x0);
@@ -6910,10 +6912,10 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
 done:
     dump_regs(L"[v55 final]");
-    /* v71fix: 黑屏很久+驱动掉根因 = return firmware → BDS 重跑 POST →
-     * GPU 重新初始化/unlock 丢失。改用黑盒式链载（chainload_preloaded：
+    /* v71fix: 黑屏很久+driver掉根因 = return firmware → BDS 重跑 POST →
+     * GPU 重新initialize/unlock 丢失。改用黑盒式链载（chainload_preloaded：
      * preload bootmgfw → LoadImage → StartImage → SFS fallback），
-     * 不回固件、无第二 POST，SS0 保持、驱动正常。 */
+     * 不回firmware、无第二 POST，SS0 保持、driver正常。 */
     {
         EFI_STATUS cst = chainload_preloaded(ImageHandle);
         Print(L"[50HX] chainload result: %r\n", cst);

@@ -1,15 +1,15 @@
 package main
 
-// v2.6.0: 精简单界面 GUI (walk) — 无选项卡、无状态表格, 安装器只管安装。
-// 打开时自动只读扫描一次(不展示明细): 结果只用于
-//   ① 组件安装区的"环境提示"行(未检测到卡/SecureBoot/Legacy 等警告)
-//   ② 缺失/未达标组件的自动预勾(已装不勾 = 不覆盖)
-// 界面自上而下:
-//   ① 组件安装 — [安装所选组件] / [一键完整安装(全流程)], 装完自动重扫更新提示
-//   ② Gen2 策略 — 驱动运行策略 + 自动 Stage2 回退 + 失败重试次数/间隔,[保存策略]
-//   ③ 操作日志 — AttachLogSink 实时输出(GUI 与 CLI 共用全部实现)
-// 卸载与详细诊断不在本界面: 50HXUninstaller.exe / -uninstall / 50HXCheck.exe。
-// 线程约定: OnClicked(UI 线程)只读控件 → goroutine 执行 → UI 变更一律经 sync()。
+// v2.6.0: simplified single-window GUI (walk) — no tabs, no status tables; the installer only handles install.
+// On open it runs a single read-only scan (without showing details); the results are used for
+//   ① the "environment hint" line in the components area (warnings about undetected card / SecureBoot / Legacy etc.)
+//   ② auto-pre-check of missing / not-meeting-target components (already installed stays unchecked = no overwrite).
+// Layout (top to bottom):
+//   ① Components — [Install selected components] / [One-click full install], auto-rescan after install to refresh hints.
+//   ② Gen2 Policy — driver runtime strategy + automatic Stage2 fallback + failure-retry count/interval, [Save policy].
+//   ③ Operation log — AttachLogSink live output (GUI and CLI share the full implementation).
+// Uninstall and detailed diagnostics are NOT in this window: use 50HXUninstaller.exe / -uninstall / 50HXCheck.exe.
+// Threading contract: OnClicked (UI thread) only reads widgets → the goroutine executes → UI changes always go through sync().
 
 import (
 	"errors"
@@ -24,7 +24,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// ---- 环境扫描(只读; 结果喂 tip 与预勾选, 不展示明细表) ----
+// ---- Environment scan (read-only; results feed tip and pre-check, no detail table) ----
 
 type statusItem struct {
 	name string
@@ -35,17 +35,17 @@ type statusItem struct {
 func scanStatus() []statusItem {
 	items := []statusItem{}
 	legacy := hxcore.FirmwareIsLegacy()
-	items = append(items, statusItem{"引导模式", !legacy,
-		map[bool]string{true: "UEFI (OK)", false: "Legacy+MBR — 算力解锁不可用, 需 mbr2gpt 转 GPT"}[legacy]})
+	items = append(items, statusItem{"Boot mode", !legacy,
+		map[bool]string{true: "UEFI (OK)", false: "Legacy+MBR — compute unlock unavailable, requires mbr2gpt to convert to GPT"}[legacy]})
 	sbOn := hxcore.SecureBootOn()
 	items = append(items, statusItem{"Secure Boot", !sbOn,
-		map[bool]string{true: "开启(需关闭!)", false: "关闭 (OK)"}[sbOn]})
+		map[bool]string{true: "On (must be disabled!)", false: "Off (OK)"}[sbOn]})
 	gpuOK := hxcore.FindGPU()
-	items = append(items, statusItem{"50HX 显卡", gpuOK,
-		map[bool]string{true: "已检测到 (VEN_10DE&DEV_1E09)", false: "未检测到 — 确认插好且驱动已装"}[gpuOK]})
+	items = append(items, statusItem{"50HX card", gpuOK,
+		map[bool]string{true: "Detected (VEN_10DE&DEV_1E09)", false: "Not detected — confirm the card is seated and the driver is installed"}[gpuOK]})
 	gspOK := hxcore.GspEnabled()
 	items = append(items, statusItem{"GSP (EnableGpuFirmware)", gspOK,
-		map[bool]string{true: "已启用 (OK)", false: "未启用 — 解锁后可能 Code43 黑屏"}[gspOK]})
+		map[bool]string{true: "Enabled (OK)", false: "Not enabled — Code 43 black screen is possible after unlock"}[gspOK]})
 
 	espEFI := false
 	if esp := hxcore.MountESP(); esp != "" {
@@ -54,50 +54,50 @@ func scanStatus() []statusItem {
 		}
 		hxcore.UnmountESP(esp)
 	}
-	items = append(items, statusItem{"ESP 解锁 EFI", espEFI,
-		map[bool]string{true: "\\EFI\\50HX\\50HXUNLK.EFI 已部署", false: "未部署 (Legacy 机器属预期)"}[espEFI]})
-	// 启动项三态(与安装器 verifyBootEntry 同口径): 首位 / 存在但不在首位 / 未创建
+	items = append(items, statusItem{"ESP unlock EFI", espEFI,
+		map[bool]string{true: "\\EFI\\50HX\\50HXUNLK.EFI deployed", false: "Not deployed (expected on Legacy machines)"}[espEFI]})
+	// Boot-entry tri-state (same semantics as the installer's verifyBootEntry): first in order / exists but not first / not created.
 	bootOK := false
-	bootNote := "未创建"
+	bootNote := "Not created"
 	if ex, first, ord := verifyBootEntry(); ex {
 		if first {
 			bootOK = true
-			bootNote = "存在且 displayorder 首位"
+			bootNote = "Exists and first in displayorder"
 		} else {
-			bootNote = "存在但不在 displayorder 首位(当前顺序: " + ord + ") — 需进 BIOS 置顶"
+			bootNote = "Exists but not first in displayorder (current order: " + ord + ") — needs to be set as first in the BIOS"
 		}
 	}
-	items = append(items, statusItem{"固件启动项", bootOK, bootNote})
+	items = append(items, statusItem{"Firmware boot entry", bootOK, bootNote})
 
 	taskOK, taskStatus, taskResult := hxcore.TaskInfo(gen2TaskName)
-	taskNote := "未注册 — Gen2 不会开机自动跑"
+	taskNote := "Not registered — Gen2 will not run automatically at boot"
 	if taskOK {
-		taskNote = "状态 " + taskStatus + " 上次结果 " + taskResult
+		taskNote = "Status " + taskStatus + " last result " + taskResult
 	}
-	items = append(items, statusItem{"Gen2 登录任务", taskOK, taskNote})
+	items = append(items, statusItem{"Gen2 logon task", taskOK, taskNote})
 	rkOK := runKeyPresent()
-	items = append(items, statusItem{"Gen2 Run 键兜底", rkOK,
-		map[bool]string{true: "已写入 (50HXGen2)", false: "未写入"}[rkOK]})
+	items = append(items, statusItem{"Gen2 Run key fallback", rkOK,
+		map[bool]string{true: "Written (50HXGen2)", false: "Not written"}[rkOK]})
 
-	// Gen2 驱动分层状态 — 判定见 hxcore/drvstate.go。
-	// S0"用完即卸"/S1"看门狗"成功后 System32 文件与服务被自清理 → 缺失≠没装过。
+	// Gen2 driver layered state — see hxcore/drvstate.go for the logic.
+	// After S0 "remove-when-done" / S1 "watchdog" succeeds, the System32 file and service are self-cleaned → missing != never installed.
 	deps := hxcore.InspectGen2Drivers()
 	if !hxcore.Gen2DriversDeployedOnce() {
-		items = append(items, statusItem{"Gen2 驱动(从未部署)", false,
-			"备份源/服务均无 — 下方勾选 [Gen2 驱动部署] 安装"})
+		items = append(items, statusItem{"Gen2 drivers (never deployed)", false,
+			"No backup source / service — tick [Gen2 driver deploy] below to install"})
 	} else {
 		var notes []string
 		curOK := true
 		cleanEnd := true
 		for _, d := range deps {
-			svcS := "服务未注册"
+			svcS := "Service not registered"
 			if d.SvcReg {
-				svcS = "服务 " + d.SvcStart
+				svcS = "Service " + d.SvcStart
 				if d.SvcStart == "DISABLED" {
-					svcS += " ⚠被禁用(Gen2 拉不起, 重装修复)"
+					svcS += " ⚠ disabled (Gen2 cannot start, re-install to repair)"
 				}
 				if d.SvcRunning {
-					svcS += "/运行中"
+					svcS += "/running"
 				}
 			}
 			notes = append(notes, d.File+": System32="+d.SysState.String()+", "+svcS)
@@ -109,27 +109,27 @@ func scanStatus() []statusItem {
 			}
 		}
 		if cleanEnd && hxcore.DriverStrategy() != hxcore.DriverStrategyResident {
-			items = append(items, statusItem{"Gen2 驱动(用完即卸终态)", true,
-				"曾部署; 已按策略自清理 — 下次登录任务会自动重部署(属正常)"})
+			items = append(items, statusItem{"Gen2 drivers (remove-when-done end state)", true,
+				"Previously deployed; self-cleaned per policy — the logon task will auto-redeploy next login (normal)"})
 		} else {
-			items = append(items, statusItem{"Gen2 驱动部署状态", curOK, strings.Join(notes, " | ")})
+			items = append(items, statusItem{"Gen2 driver deployment status", curOK, strings.Join(notes, " | ")})
 		}
 	}
 	if exOK, err := hxcore.DefenderExclusionsPresent(); err != nil {
-		items = append(items, statusItem{"Defender 排除", false,
-			"查询失败(" + err.Error() + ") — 以管理员重扫或忽略"})
+		items = append(items, statusItem{"Defender exclusions", false,
+			"Query failed (" + err.Error() + ") — re-scan as administrator or ignore"})
 	} else {
-		items = append(items, statusItem{"Defender 排除", exOK,
-			map[bool]string{true: "两个 .sys + ProgramData 备份目录均已加白", false: "未加白 — 杀软可能误删驱动(重装补)"}[exOK]})
+		items = append(items, statusItem{"Defender exclusions", exOK,
+			map[bool]string{true: "Both .sys files + the ProgramData backup directory are whitelisted", false: "Not whitelisted — AV may delete drivers (reinstall to add)"}[exOK]})
 	}
 
 	fsOn := hxcore.FastStartupOn()
-	items = append(items, statusItem{"快速启动", !fsOn,
-		map[bool]string{true: "开启(建议关闭 — EFI 可能不跑)", false: "关闭 (OK)"}[fsOn]})
+	items = append(items, statusItem{"Fast Startup", !fsOn,
+		map[bool]string{true: "On (recommend off — EFI may not run)", false: "Off (OK)"}[fsOn]})
 	if ac, dc, aspmOK := hxcore.ASPMSavings(); aspmOK {
 		off := ac == 0 && dc == 0
 		items = append(items, statusItem{"PCIe ASPM", off,
-			map[bool]string{true: "关闭 (OK)", false: fmt.Sprintf("开启(AC=%d DC=%d) — 空闲可能降速 Gen1", ac, dc)}[off]})
+			map[bool]string{true: "Off (OK)", false: fmt.Sprintf("On (AC=%d DC=%d) — may downshift to Gen1 at idle", ac, dc)}[off]})
 	}
 	return items
 }
@@ -145,7 +145,7 @@ func runKeyPresent() bool {
 	return err == nil
 }
 
-// ---- 日志面板写入器 (AttachLogSink 目标) ----
+// ---- Log-panel writer (AttachLogSink target) ----
 
 type guiLog struct {
 	mw *walk.MainWindow
@@ -155,7 +155,7 @@ type guiLog struct {
 func (g *guiLog) Write(p []byte) (int, error) {
 	s := string(p)
 	if g.mw != nil && g.te != nil {
-		// EDIT 控件换行需要 CRLF: 统一把 \n 规范成 \r\n, 否则日志会挤成一段
+		// The EDIT control requires CRLF for newlines — normalize all line endings to \r\n, otherwise the log will be mashed into one block.
 		s = strings.ReplaceAll(s, "\r\n", "\n")
 		s = strings.ReplaceAll(s, "\r", "\n")
 		s = strings.ReplaceAll(s, "\n", "\r\n")
@@ -164,19 +164,19 @@ func (g *guiLog) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// ---- GUI 状态 ----
+// ---- GUI state ----
 
 type guiState struct {
 	mw       *walk.MainWindow
 	log      *guiLog
 	teLog    *walk.TextEdit
 	tip      *walk.Label
-	busyBy   string // 当前占用互斥的操作名(""=空闲)。只在 UI 线程读写:
-	// begin() 在 OnClicked(UI线程) 调用, end() 经 sync 回到 UI 线程 → 无线程竞争。
+	busyBy   string // Name of the currently mutex-held operation (""=idle). Read/written on UI thread only:
+	// begin() is called from OnClicked (UI thread), end() comes back to the UI thread via sync() → no thread races.
 	lastScan  []statusItem
-	lastGuide string // 上次打印的环境指引(变化才打印, 防重扫刷屏)
-	lastAV      string // 上次识别到的第三方杀软(同上)
-	lastDefWarn string // "无 Defender 模块"提示去重
+	lastGuide string // Last environment-guide printed (only print on change, avoids re-scan spam)
+	lastAV      string // Last detected third-party AV (same as above)
+	lastDefWarn string // "No Defender module" hint de-dup
 
 	ckGsp, ckDrv, ckEfi, ckTask            *walk.CheckBox
 	ckFast, ckAspm, ckPerf, ckDefOff       *walk.CheckBox
@@ -197,11 +197,11 @@ func (st *guiState) sync(f func()) {
 	}
 }
 
-// begin: 在 UI 线程(OnClicked)同步抢全局互斥 — 一次只允许一个长操作在跑。
-// 抢到即占住(busyBy)并同步禁用按钮, 杜绝"连点/快速双击"在 goroutine 里抢锁的竞态。
+// begin: synchronously grab the global mutex on the UI thread (OnClicked) — only one long operation runs at a time.
+// Whoever wins holds busyBy and synchronously disables the buttons, preventing the "click-spam / fast double-click" race that would otherwise happen if the goroutine grabbed the lock.
 func (st *guiState) begin(what string) bool {
 	if st.busyBy != "" {
-		fmt.Println("[!] 正在执行 " + st.busyBy + " — " + what + " 已跳过, 请等它完成后再试")
+		fmt.Println("[!] Already running " + st.busyBy + " — " + what + " skipped, please wait for it to finish")
 		return false
 	}
 	st.busyBy = what
@@ -212,7 +212,7 @@ func (st *guiState) end() {
 	st.sync(func() { st.busyBy = "" })
 }
 
-// setActionsEnabled: 初始自动扫描期间禁用执行按钮, 防止与手动操作并发抢 IO。
+// setActionsEnabled: disable action buttons during the initial auto-scan to prevent racing the manual operations on shared I/O.
 func (st *guiState) setActionsEnabled(on bool) {
 	st.sync(func() {
 		for _, b := range []*walk.PushButton{st.pbInstall, st.pbFull, st.pbSave, st.pbGen2} {
@@ -223,40 +223,40 @@ func (st *guiState) setActionsEnabled(on bool) {
 	})
 }
 
-// summaryText: 把"不处理就装不上/装了也不生效"的最关键状态合成安装区顶部提示。
+// summaryText: combines the most important states ("if not handled, install fails / install doesn't take effect") into the hint line at the top of the install area.
 func (st *guiState) summaryText(items []statusItem) string {
 	m := map[string]statusItem{}
 	for _, it := range items {
 		m[it.name] = it
 	}
-	if it, ok := m["50HX 显卡"]; ok && !it.ok {
-		return "⚠ 未检测到 50HX — 请先确认显卡插好且驱动已装, 否则安装无意义"
+	if it, ok := m["50HX card"]; ok && !it.ok {
+		return "⚠ 50HX not detected — please first confirm the card is seated and the driver is installed; otherwise install is meaningless"
 	}
 	var warns []string
 	if it, ok := m["Secure Boot"]; ok && !it.ok {
-		warns = append(warns, "Secure Boot 开启, 需进 BIOS 关闭")
+		warns = append(warns, "Secure Boot is on, disable it in the BIOS")
 	}
-	if it, ok := m["引导模式"]; ok && !it.ok {
-		warns = append(warns, "Legacy+MBR 引导, 算力 EFI 装不上(需 mbr2gpt 转 GPT)")
+	if it, ok := m["Boot mode"]; ok && !it.ok {
+		warns = append(warns, "Legacy+MBR boot, compute EFI cannot be installed (requires mbr2gpt to convert to GPT)")
 	}
-	if it, ok := m["Gen2 驱动(从未部署)"]; ok && !it.ok {
-		warns = append(warns, "Gen2 驱动从未部署")
+	if it, ok := m["Gen2 drivers (never deployed)"]; ok && !it.ok {
+		warns = append(warns, "Gen2 drivers have never been deployed")
 	}
-	if it, ok := m["Gen2 登录任务"]; ok && !it.ok {
-		warns = append(warns, "Gen2 登录自启未注册")
+	if it, ok := m["Gen2 logon task"]; ok && !it.ok {
+		warns = append(warns, "Gen2 logon auto-start is not registered")
 	}
-	// 启动项: 仅 UEFI 下检查(存在但不在首位 / 未创建)
-	if it, ok := m["固件启动项"]; ok && !it.ok {
-		if bl, ok2 := m["引导模式"]; !ok2 || bl.ok {
-			if strings.Contains(it.note, "不在") {
-				warns = append(warns, "启动项存在但不在首位, 需 BIOS 置顶")
+	// Boot entry: only checked under UEFI (exists but not first / not created).
+	if it, ok := m["Firmware boot entry"]; ok && !it.ok {
+		if bl, ok2 := m["Boot mode"]; !ok2 || bl.ok {
+			if strings.Contains(it.note, "not first") {
+				warns = append(warns, "Boot entry exists but is not first, needs to be set as first in BIOS")
 			} else {
-				warns = append(warns, "固件启动项未创建")
+				warns = append(warns, "Firmware boot entry not created")
 			}
 		}
 	}
 	if len(warns) == 0 {
-		return "✓ 环境就绪 — 缺失组件已自动预勾, 点[安装所选组件]或[一键完整安装]即可"
+		return "✓ Environment ready — missing components are auto-pre-checked, click [Install selected components] or [One-click full install]"
 	}
 	s := "⚠ " + strings.Join(warns, "; ")
 	if r := []rune(s); len(r) > 90 {
@@ -265,48 +265,48 @@ func (st *guiState) summaryText(items []statusItem) string {
 	return s
 }
 
-// envGuide: "已知问题 → 解决步骤"的安装指引(参照 v2.4 弹窗文案的引导风格,
-// 只输出当前确实存在的问题对应的处理步骤, 供日志阅读)。
+// envGuide: install-guide mapping "known problem → remediation steps" (echoes the v2.4 popup-text guidance style;
+// only emits the steps for problems that are actually present, for log reading).
 func (st *guiState) envGuide(items []statusItem) string {
 	m := map[string]statusItem{}
 	for _, it := range items {
 		m[it.name] = it
 	}
 	var g []string
-	if it, ok := m["50HX 显卡"]; ok && !it.ok {
-		g = append(g, "· 未检测到 40HX: ①确认供电与 PCIe 插稳; ②设备管理器看是否有 code43(未装驱动先装); ③BIOS 关 CSM(纯 UEFI)后再扫")
+	if it, ok := m["50HX card"]; ok && !it.ok {
+		g = append(g, "· 40HX not detected: ① confirm power and PCIe seating; ② check Device Manager for code 43 (install the driver first); ③ disable CSM in BIOS (pure UEFI), then re-scan")
 	}
 	if it, ok := m["Secure Boot"]; ok && !it.ok {
-		g = append(g, "· Secure Boot 开启: 重启按 Del/F2 进 BIOS → Security/Boot → Secure Boot=Disabled → F10 保存 → 回系统重跑本工具")
+		g = append(g, "· Secure Boot is ON: reboot and press Del/F2 to enter BIOS -> Security/Boot -> Secure Boot=Disabled -> F10 to save -> return to the system and re-run this tool")
 	}
-	if it, ok := m["引导模式"]; ok && !it.ok {
-		g = append(g, "· Legacy+MBR 引导: 无 EFI 分区算力解锁装不上 → 管理员 CMD 依次: mbr2gpt /validate /allowfullos → mbr2gpt /convert /allowfullos → 重启改 UEFI(关 CSM) → 重跑本工具(完整步骤见 README §2.4)")
+	if it, ok := m["Boot mode"]; ok && !it.ok {
+		g = append(g, "· Legacy+MBR boot: there is no EFI partition, so compute unlock cannot be installed -> run as administrator in CMD: mbr2gpt /validate /allowfullos -> mbr2gpt /convert /allowfullos -> reboot into UEFI (disable CSM) -> re-run this tool (full steps in README §2.4)")
 	}
-	if it, ok := m["固件启动项"]; ok && !it.ok {
-		if bl, ok2 := m["引导模式"]; !ok2 || bl.ok {
-			if strings.Contains(it.note, "不在") {
-				g = append(g, "· 启动项存在但不在 displayorder 首位: 进 BIOS 把 '50HX Unlock' 设为第一启动项(否则开机可能不执行)")
+	if it, ok := m["Firmware boot entry"]; ok && !it.ok {
+		if bl, ok2 := m["Boot mode"]; !ok2 || bl.ok {
+			if strings.Contains(it.note, "not first") {
+				g = append(g, "· Boot entry exists but is not first in displayorder: enter the BIOS and set '50HX Unlock' as the first boot entry (otherwise it may not run at boot)")
 			} else {
-				g = append(g, "· 固件启动项未创建: 勾选上方[算力 EFI 部署 + 固件启动项]即可自动创建并置顶; 若 BIOS 列表仍不显示, 用 PE(firPE)/DiskGenius 修复引导或手动把 UEFI 盘设为首启(走 bootx64 兜底)")
+				g = append(g, "· Firmware boot entry not created: tick [Compute EFI Deploy + firmware boot entry] above to auto-create and set it as first; if it still does not show in the BIOS list, use PE (firPE) / DiskGenius to repair the boot, or manually set the UEFI disk as the first boot device (falls back to bootx64)")
 			}
 		}
 	}
-	if it, ok := m["Gen2 驱动(从未部署)"]; ok && !it.ok {
-		g = append(g, "· Gen2 驱动从未部署: 勾选[Gen2 驱动部署 + Defender 排除]安装(会自动加白并处理第三方杀软信任提示)")
+	if it, ok := m["Gen2 drivers (never deployed)"]; ok && !it.ok {
+		g = append(g, "· Gen2 drivers have never been deployed: tick [Gen2 driver deploy + Defender exclusions] to install (auto-whitelists and handles third-party AV trust prompts)")
 	}
-	if it, ok := m["Gen2 登录任务"]; ok && !it.ok {
-		g = append(g, "· Gen2 登录自启未注册: 勾选[Gen2 登录自启]安装; 或管理员运行 50HXInstaller.exe -task")
+	if it, ok := m["Gen2 logon task"]; ok && !it.ok {
+		g = append(g, "· Gen2 logon auto-start not registered: tick [Gen2 logon auto-start] to install; or run 50HXInstaller.exe -task as administrator")
 	}
-	if it, ok := m["ESP 解锁 EFI"]; ok && !it.ok {
-		if bl, ok2 := m["引导模式"]; !ok2 || bl.ok {
-			g = append(g, "· 算力解锁 EFI 未部署(若你是刚卸载/暂不装算力: 属预期 — 算力锁不会自动解, Gen2 不受影响; 想恢复算力解锁就勾上方 [算力 EFI 部署 + 固件启动项] 安装)")
+	if it, ok := m["ESP unlock EFI"]; ok && !it.ok {
+		if bl, ok2 := m["Boot mode"]; !ok2 || bl.ok {
+			g = append(g, "· Compute unlock EFI not deployed (if you just uninstalled / don't want compute for now: this is expected — the compute lock stays, Gen2 is unaffected; to restore compute unlock, tick [Compute EFI Deploy + firmware boot entry] above to install)")
 		}
 	}
 	return strings.Join(g, "\n")
 }
 
-// scanOnce: 只读扫描一次并刷新顶部提示(不展示明细)。
-// 同时输出: 环境处理指引(已知问题→解决步骤)与第三方杀软报告 — 仅在内容变化时打印。
+// scanOnce: runs a single read-only scan and refreshes the top hint (does not show details).
+// Also outputs: environment remediation guide (known problem -> steps) and the third-party AV report — only when content changes.
 func (st *guiState) scanOnce() {
 	items := scanStatus()
 	st.lastScan = items
@@ -316,22 +316,22 @@ func (st *guiState) scanOnce() {
 			st.tip.SetText(tip)
 		}
 	})
-	// 第三方杀软探测(只读): 它不读 Defender 排除列表, 需手动放行
+	// Third-party AV detection (read-only): it does not read the Defender exclusion list, the user must allow manually.
 	av := hxcore.DetectThirdPartyAV()
 	avKey := strings.Join(av, ",")
 	if avKey != st.lastAV {
 		if len(av) > 0 {
-			fmt.Println("[杀软] 检测到第三方安全软件: " + strings.Join(av, " / ") +
-				" — 请在信任/白名单放行 4 个驱动路径:")
+			fmt.Println("[AV] Detected third-party security software: " + strings.Join(av, " / ") +
+				" — please allow the 4 driver paths in its trust/whitelist:")
 			fmt.Println("        C:\\Windows\\System32\\drivers\\ThrottleStop.sys")
 			fmt.Println("        C:\\Windows\\System32\\drivers\\WinRing0x64.sys")
-			fmt.Println("        %ProgramData%\\50HXUnlock\\drivers\\ 下的 ThrottleStop.sys / WinRing0x64.sys")
+			fmt.Println("        %ProgramData%\\50HXUnlock\\drivers\\ — ThrottleStop.sys / WinRing0x64.sys")
 		}
 		st.lastAV = avKey
 	}
 }
 
-// applySmartDefaults: 按最近一次扫描预勾选 — 组件缺失/未达标才勾(已装不勾=不覆盖)。
+// applySmartDefaults: pre-check based on the latest scan — only tick missing / not-meeting-target components (already installed stays unchecked = no overwrite).
 func (st *guiState) applySmartDefaults() {
 	items := st.lastScan
 	if len(items) == 0 {
@@ -342,8 +342,8 @@ func (st *guiState) applySmartDefaults() {
 	for _, it := range items {
 		flags[it.name] = it.ok
 	}
-	if !flags["50HX 显卡"] {
-		fmt.Println("[i] 未检测到 50HX — 安装区保持全不勾(请先确认显卡/驱动)")
+	if !flags["50HX card"] {
+		fmt.Println("[i] 50HX not detected — leaving the install area fully unchecked (please first confirm the card / driver)")
 		st.sync(func() {
 			st.ckGsp.SetChecked(false)
 			st.ckDrv.SetChecked(false)
@@ -361,28 +361,28 @@ func (st *guiState) applySmartDefaults() {
 		aspmOK = v
 	}
 	needGsp := !flags["GSP (EnableGpuFirmware)"]
-	// 驱动部署需要与否不能只看 System32 文件(用完即卸终态会缺失):
-	// 从未部署 / 服务被 DISABLED / 文件 0字节或与备份不一致 → 才需要装
+	// Whether the drivers need to be deployed cannot be decided by only looking at the System32 files (the remove-when-done end-state is missing):
+	// only install when never deployed / service is DISABLED / file is 0 bytes or size-mismatched with the backup.
 	needDrv := hxcore.Gen2DriversNeedDeploy()
 	needEfi := false
-	if flags["引导模式"] {
-		needEfi = !flags["ESP 解锁 EFI"] || !flags["固件启动项"]
+	if flags["Boot mode"] {
+		needEfi = !flags["ESP unlock EFI"] || !flags["Firmware boot entry"]
 	} else {
-		fmt.Println("[i] Legacy+MBR 引导: 算力 EFI 不可装 — 未预勾(需先 mbr2gpt 转 GPT)")
+		fmt.Println("[i] Legacy+MBR boot: compute EFI cannot be installed — not pre-checked (requires mbr2gpt to GPT first)")
 	}
-	needTask := !flags["Gen2 登录任务"]
-	needFast := !flags["快速启动"]
+	needTask := !flags["Gen2 logon task"]
+	needFast := !flags["Fast Startup"]
 	needAspm := !aspmOK
 	needPerf := !hxcore.HighPerfPlanActive()
-	// Defender 实时防护: 开着→预勾(如实); 已关→不勾; 模块缺失/查不到→不勾+简短提示一次
+	// Defender real-time protection: ON -> pre-check (true to state); OFF -> no check; module missing / undetectable -> no check + a short one-time hint.
 	needDefOff, defKnown := false, false
 	if on, err := hxcore.DefenderRealtimeProtectionOn(); err == nil {
 		defKnown = true
 		needDefOff = on
 	} else {
-		defWarn := "本机无 Defender 管理模块(第三方杀软请在其信任列表放行驱动)"
+		defWarn := "No Defender management module on this machine (for third-party AV please allow the drivers in its trust list)"
 		if !errors.Is(err, hxcore.ErrMpUnavailable) {
-			defWarn = "Defender 状态查询失败: " + err.Error()
+			defWarn = "Defender status query failed: " + err.Error()
 		}
 		if defWarn != st.lastDefWarn {
 			fmt.Println("[i] " + defWarn)
@@ -391,94 +391,94 @@ func (st *guiState) applySmartDefaults() {
 	}
 	var pre []string
 	st.sync(func() {
-		// 显式双向设置: 缺失/未达标 → 勾(待执行); 已就绪 → 取消勾(不覆盖)。
-		// v3.0.0 修复: 旧实现只 SetChecked(true), 装完重扫后已就绪项仍保持勾选。
+		// Explicit two-way setting: missing / not-meeting-target -> tick (pending action); already ready -> un-tick (no overwrite).
+		// v3.0.0 fix: the old implementation only called SetChecked(true), so after install + rescan the already-ready items remained ticked.
 		st.ckGsp.SetChecked(needGsp)
 		if needGsp {
 			pre = append(pre, "GSP")
 		}
 		st.ckDrv.SetChecked(needDrv)
 		if needDrv {
-			pre = append(pre, "Gen2 驱动")
+			pre = append(pre, "Gen2 drivers")
 		}
 		st.ckEfi.SetChecked(needEfi)
 		if needEfi {
-			pre = append(pre, "算力 EFI+启动项")
+			pre = append(pre, "Compute EFI + boot entry")
 		}
 		st.ckTask.SetChecked(needTask)
 		if needTask {
-			pre = append(pre, "Gen2 登录自启")
+			pre = append(pre, "Gen2 logon auto-start")
 		}
 		st.ckFast.SetChecked(needFast)
 		if needFast {
-			pre = append(pre, "关快速启动")
+			pre = append(pre, "Disable Fast Startup")
 		}
 		st.ckAspm.SetChecked(needAspm)
 		if needAspm {
-			pre = append(pre, "关ASPM")
+			pre = append(pre, "Disable ASPM")
 		}
 		st.ckPerf.SetChecked(needPerf)
 		if needPerf {
-			pre = append(pre, "高性能计划")
+			pre = append(pre, "High-performance plan")
 		}
 		wantDefOff := defKnown && needDefOff
 		st.ckDefOff.SetChecked(wantDefOff)
 		if wantDefOff {
-			pre = append(pre, "关 Defender 实时防护")
+			pre = append(pre, "Disable Defender real-time protection")
 		}
-		// 勾选与否由上面扫描判定; 状态与信任/白名单说明只进日志, 不上 UI 标签
+		// The checked/unchecked state is decided by the scan above; the status and trust/whitelist notes only go into the log, not the UI labels.
 	})
 	if len(pre) > 0 {
-		fmt.Println("[i] 预勾: " + strings.Join(pre, " / ") + " → 点[安装所选组件]执行; 其余已就绪不勾(不覆盖)")
+		fmt.Println("[i] Pre-checked: " + strings.Join(pre, " / ") + " -> click [Install selected components] to run; the rest are already ready and remain unchecked (no overwrite)")
 		return
 	}
-	// 全都没勾: 一行列出原因(均已就绪, 勾了会覆盖/刷新)
+	// Nothing ticked: list the reasons on one line (all ready, ticking would overwrite / refresh).
 	var ready []string
 	if !needGsp {
-		ready = append(ready, "GSP 已启用")
+		ready = append(ready, "GSP enabled")
 	}
 	if !needDrv {
-		ready = append(ready, "Gen2 驱动已就绪")
+		ready = append(ready, "Gen2 drivers ready")
 	}
-	if !flags["引导模式"] {
-		ready = append(ready, "算力 EFI(先 mbr2gpt)")
+	if !flags["Boot mode"] {
+		ready = append(ready, "Compute EFI (run mbr2gpt first)")
 	} else if !needEfi {
-		ready = append(ready, "EFI+启动项已就绪")
+		ready = append(ready, "EFI + boot entry ready")
 	}
 	if !needTask {
-		ready = append(ready, "自启已注册")
+		ready = append(ready, "Auto-start registered")
 	}
 	if !needFast {
-		ready = append(ready, "快速启动已关")
+		ready = append(ready, "Fast Startup off")
 	}
 	if !needAspm {
-		ready = append(ready, "ASPM 已关")
+		ready = append(ready, "ASPM off")
 	}
 	if !needPerf {
-		ready = append(ready, "已是高性能计划")
+		ready = append(ready, "Already on High performance plan")
 	}
 	if defKnown && !needDefOff {
-		ready = append(ready, "Defender 实时防护已关")
+		ready = append(ready, "Defender real-time protection off")
 	}
-	fmt.Println("[i] 均已就绪, 未勾选(不覆盖): " + strings.Join(ready, " | "))
+	fmt.Println("[i] All ready, nothing checked (no overwrite): " + strings.Join(ready, " | "))
 }
 
-// printDefErr: Defender 相关错误的简短呈现 — 模块缺失给固定短句+放行路径, 其余原样输出。
+// printDefErr: short display of Defender-related errors — a fixed short sentence + the allow-paths list when the module is missing, otherwise raw output.
 func (st *guiState) printDefErr(prefix string, err error) {
 	if err == nil {
 		return
 	}
 	if errors.Is(err, hxcore.ErrMpUnavailable) {
-		fmt.Println(prefix + "本机无 Defender 管理模块 — 自动加白/实时防护开关不可用")
-		fmt.Println(prefix + "第三方杀软请在其信任/白名单放行:")
+		fmt.Println(prefix + "No Defender management module on this machine — auto-whitelist / real-time protection toggle is unavailable")
+		fmt.Println(prefix + "Third-party AV users please allow in their trust/whitelist:")
 		fmt.Println("      C:\\Windows\\System32\\drivers\\ThrottleStop.sys / WinRing0x64.sys")
-		fmt.Println("      %ProgramData%\\50HXUnlock\\drivers\\ 下同名两个 .sys")
+		fmt.Println("      %ProgramData%\\50HXUnlock\\drivers\\ — two .sys files of the same name")
 		return
 	}
 	fmt.Println(prefix + err.Error())
 }
 
-// loadPolicyUI: 启动时回读当前策略(须在 UI 线程调用 — Create 之后、Run 之前)
+// loadPolicyUI: reads back the current policy at startup (must be called on the UI thread — after Create, before Run).
 func (st *guiState) loadPolicyUI() {
 	strat := hxcore.DriverStrategy()
 	for i, rb := range st.rbStrategy {
@@ -490,7 +490,7 @@ func (st *guiState) loadPolicyUI() {
 	st.neRetryMin.SetValue(float64(interval))
 }
 
-// savePolicy: Gen2 策略落盘 (HKLM\SOFTWARE\50HXUnlock, -gen2 登录任务读取)
+// savePolicy: writes the Gen2 policy to disk (HKLM\SOFTWARE\50HXUnlock, read by the -gen2 logon task).
 func (st *guiState) savePolicy() {
 	defer st.end()
 	strat := 0
@@ -500,7 +500,7 @@ func (st *guiState) savePolicy() {
 		}
 	}
 	if err := hxcore.SetConfigInt("DriverStrategy", strat); err != nil {
-		fmt.Println("[策略] 保存失败:", err)
+		fmt.Println("[Policy] Save failed:", err)
 		return
 	}
 	auto := 0
@@ -511,12 +511,12 @@ func (st *guiState) savePolicy() {
 	hxcore.SetConfigInt("Gen2AutoHard", auto)
 	hxcore.SetConfigInt("Gen2RetryCount", cnt)
 	hxcore.SetConfigInt("Gen2RetryIntervalMin", interval)
-	fmt.Printf("[策略] 已保存: 驱动策略=%d Gen2AutoHard=%d 重试=%d次/间隔=%d分钟 (登录任务/-gen2 生效)\n", strat, auto, cnt, interval)
+	fmt.Printf("[Policy] Saved: driver strategy=%d Gen2AutoHard=%d retries=%d / interval=%d min (active for logon task / -gen2)\n", strat, auto, cnt, interval)
 	if strat == hxcore.DriverStrategyResident {
 		if ok, _, _ := hxcore.TaskInfo(gen2TaskName); !ok {
-			fmt.Println("[提示] 常驻守护需登录自启任务承载: 请在 ① 区勾[Gen2 登录自启]点[安装所选组件], 或用 ② [执行 Gen2 并安装自启] 一步到位")
+			fmt.Println("[Hint] Resident guardian requires a logon auto-start task to host it: in ① tick [Gen2 logon auto-start] and click [Install selected components], or use ② [Run Gen2 and install auto-start] for a one-shot")
 		} else {
-			fmt.Println("[提示] 已选常驻守护: 请再点一次 ② [执行 Gen2 并安装自启](或 ① [Gen2 登录自启])刷新任务命令行, 使其携带守护参数(-guard)")
+			fmt.Println("[Hint] Resident guardian selected: click ② [Run Gen2 and install auto-start] (or ① [Gen2 logon auto-start]) again to refresh the task command line so it carries the guardian parameter (-guard)")
 		}
 	}
 }
@@ -530,35 +530,35 @@ func runGUI() {
 
 	createErr := MainWindow{
 		AssignTo: &st.mw,
-		Title:    "CMP 50HX 解锁管理器 v3.0.0",
+		Title:    "CMP 50HX Unlock Manager v3.0.0",
 		MinSize:  Size{Width: 780, Height: 660},
 		Size:     Size{Width: 860, Height: 800},
 		Layout:   VBox{Spacing: 6},
 		Children: []Widget{
 			GroupBox{
-				Title:  "① 组件安装与环境设置 (按当前状态预勾选; 勾选 = 执行/刷新)",
+				Title:  "① Components and environment setup (auto-pre-checked by current state; tick = run / refresh)",
 				Layout: VBox{Spacing: 4},
 				Children: []Widget{
-					Label{AssignTo: &st.tip, Text: "正在扫描环境…"},
+					Label{AssignTo: &st.tip, Text: "Scanning environment..."},
 					Composite{
 						Layout: Grid{Columns: 2},
 						Children: []Widget{
-							CheckBox{AssignTo: &st.ckGsp, Text: "GSP 启用 (EnableGpuFirmware=1)"},
-							CheckBox{AssignTo: &st.ckEfi, Text: "算力 EFI + 固件启动项"},
-							CheckBox{AssignTo: &st.ckDrv, Text: "Gen2 驱动部署 + Defender 排除"},
-							CheckBox{AssignTo: &st.ckTask, Text: "Gen2 登录自启"},
-							CheckBox{AssignTo: &st.ckFast, Text: "电源: 关闭快速启动"},
-							CheckBox{AssignTo: &st.ckAspm, Text: "电源: 关闭 PCIe 链路省电"},
-							CheckBox{AssignTo: &st.ckPerf, Text: "电源: 高性能电源计划"},
-							CheckBox{AssignTo: &st.ckDefOff, Text: "关闭 Defender 实时防护"},
+							CheckBox{AssignTo: &st.ckGsp, Text: "GSP enable (EnableGpuFirmware=1)"},
+							CheckBox{AssignTo: &st.ckEfi, Text: "Compute EFI + firmware boot entry"},
+							CheckBox{AssignTo: &st.ckDrv, Text: "Gen2 driver deploy + Defender exclusions"},
+							CheckBox{AssignTo: &st.ckTask, Text: "Gen2 logon auto-start"},
+							CheckBox{AssignTo: &st.ckFast, Text: "Power: disable Fast Startup"},
+							CheckBox{AssignTo: &st.ckAspm, Text: "Power: disable PCIe link power saving"},
+							CheckBox{AssignTo: &st.ckPerf, Text: "Power: High performance power plan"},
+							CheckBox{AssignTo: &st.ckDefOff, Text: "Disable Defender real-time protection"},
 						},
 					},
 					Composite{
 						Layout: HBox{},
 						Children: []Widget{
-							PushButton{AssignTo: &st.pbInstall, Text: "安装所选组件", OnClicked: func() {
-								// begin 在 UI 线程同步抢锁: 抢到即占住, 连点到不了这里
-								if !st.begin("组件安装") {
+							PushButton{AssignTo: &st.pbInstall, Text: "Install selected components", OnClicked: func() {
+								// begin grabs the lock synchronously on the UI thread: whoever wins holds it, so click-spam can't reach here
+								if !st.begin("Component install") {
 									return
 								}
 								sel := map[string]bool{
@@ -573,8 +573,8 @@ func runGUI() {
 								}
 								go st.installSelected(sel)
 							}},
-							PushButton{AssignTo: &st.pbFull, Text: "一键完整安装 (全流程)", OnClicked: func() {
-								if !st.begin("完整安装") {
+							PushButton{AssignTo: &st.pbFull, Text: "One-click full install (full flow)", OnClicked: func() {
+								if !st.begin("Full install") {
 									return
 								}
 								go func() {
@@ -582,7 +582,7 @@ func runGUI() {
 									st.sync(func() { st.pbFull.SetEnabled(false) })
 									defer st.sync(func() { st.pbFull.SetEnabled(true) })
 									install()
-									st.scanOnce() // 装完自动重扫, 顶部提示/预勾随之更新
+									st.scanOnce() // auto-rescan after install; top hint / pre-check update accordingly
 									st.applySmartDefaults()
 								}()
 							}},
@@ -591,83 +591,83 @@ func runGUI() {
 				},
 			},
 			GroupBox{
-				Title:  "② Gen2 策略 (保存即生效; 登录任务与 -gen2 读取, 详见 README §2.5)",
+				Title:  "② Gen2 Policy (saved = effective; the logon task and -gen2 read this — see README §2.5)",
 				Layout: VBox{Spacing: 4},
 				Children: []Widget{
-					Label{Text: "驱动策略: Gen2 解锁用的两个驱动, 跑完后怎么处理"},
-					Label{Text: "① 用完即卸(默认, 每次自动清理, 游戏/反作弊最干净)   ② 失败自动重试   ③ 常驻守护(驱动保留, 每分钟自查 Gen2, TLS 丢失自动重训)"},
+					Label{Text: "Driver strategy: how the two drivers used for Gen2 unlock are handled after a run"},
+					Label{Text: "① Remove when done (default; auto-cleaned each run, cleanest against games / anti-cheat)   ② Auto-retry on failure   ③ Resident guardian (drivers kept, checks Gen2 every minute, auto-retrains if TLS is lost)"},
 					Composite{
 						Layout: Grid{Columns: 3},
 						Children: []Widget{
-							RadioButton{AssignTo: &st.rbStrategy[0], Text: "用完即卸 (默认/推荐)"},
-							RadioButton{AssignTo: &st.rbStrategy[1], Text: "失败自动重试"},
-							RadioButton{AssignTo: &st.rbStrategy[2], Text: "常驻守护 (定时看 Gen2)"},
+							RadioButton{AssignTo: &st.rbStrategy[0], Text: "Remove when done (default / recommended)"},
+							RadioButton{AssignTo: &st.rbStrategy[1], Text: "Auto-retry on failure"},
+							RadioButton{AssignTo: &st.rbStrategy[2], Text: "Resident guardian (periodic Gen2 check)"},
 						},
 					},
-					CheckBox{AssignTo: &st.ckAutoHard, Text: "Gen2 未达成时自动执行 Stage2 回退 (Link Disable + PnP 恢复; 关掉可避免唯一显示卡登录后瞬断数秒)"},
+					CheckBox{AssignTo: &st.ckAutoHard, Text: "Auto-run Stage2 fallback when Gen2 is not achieved (Link Disable + PnP recovery; turning it off avoids the few-second drop on the only display card after login)"},
 					Composite{
 						Layout: HBox{},
 						Children: []Widget{
-							Label{Text: "失败自动重试:"},
+							Label{Text: "Auto-retry on failure:"},
 							NumberEdit{AssignTo: &st.neRetryCnt, MinValue: 0.0, MaxValue: 12.0, MinSize: Size{Width: 56}},
-							Label{Text: "次 / 间隔:"},
+							Label{Text: "count / interval:"},
 							NumberEdit{AssignTo: &st.neRetryMin, MinValue: 1.0, MaxValue: 240.0, MinSize: Size{Width: 56}},
-							Label{Text: "分钟"},
+							Label{Text: "minutes"},
 						},
 					},
 					Composite{
 						Layout: HBox{},
 						Children: []Widget{
-							PushButton{AssignTo: &st.pbSave, Text: "保存策略", OnClicked: func() {
-								if !st.begin("保存策略") {
+							PushButton{AssignTo: &st.pbSave, Text: "Save policy", OnClicked: func() {
+								if !st.begin("Save policy") {
 									return
 								}
 								go st.savePolicy()
 							}},
-							PushButton{AssignTo: &st.pbGen2, Text: "立即执行 Gen2 (仅本次解锁)", OnClicked: func() {
-								if !st.begin("立即执行 Gen2") {
+							PushButton{AssignTo: &st.pbGen2, Text: "Run Gen2 now (this session only)", OnClicked: func() {
+								if !st.begin("Run Gen2 now") {
 									return
 								}
 								go func() {
 									defer st.end()
 									st.sync(func() { st.pbGen2.SetEnabled(false) })
 									defer st.sync(func() { st.pbGen2.SetEnabled(true) })
-									fmt.Println("[Gen2] 立即执行一次(等价命令行 -gen2): 临时加载驱动→解锁→默认用完即卸。")
-									fmt.Println("[Gen2] 注意: 本按钮【仅本次生效】, 不会安装开机自启;")
-									fmt.Println("[Gen2] 想装好后每次开机自动解锁, 请点右侧[执行 Gen2 并安装自启], 或勾①区 [Gen2 登录自启] 并安装。")
+									fmt.Println("[Gen2] Run once now (equivalent to CLI -gen2): temporarily load drivers -> unlock -> default remove-when-done.")
+									fmt.Println("[Gen2] Note: this button is [effective for this session only], it does NOT install boot-time auto-start;")
+									fmt.Println("[Gen2] To unlock automatically on every boot after install, click the right-hand [Run Gen2 and install auto-start], or tick ① [Gen2 logon auto-start] and install.")
 									gen2Main()
 									if hxcore.DriverStrategy() == hxcore.DriverStrategyResident {
-										fmt.Println("[提示] 已选'常驻守护': 本次已解锁; 每分钟自查由登录自启任务承担(下次登录起), 未注册自启则守护不会运行。")
+										fmt.Println("[Hint] 'Resident guardian' is selected: this session has been unlocked; the per-minute self-check is carried by the logon auto-start task (effective from next login); if auto-start is not registered the guardian will not run.")
 									}
-									st.scanOnce() // Gen2 后驱动/终态可能变化, 更新提示
+									st.scanOnce() // after Gen2 the drivers / end-state may change — refresh the hint
 								}()
 							}},
-							PushButton{AssignTo: &st.pbGen2Install, Text: "执行 Gen2 并安装自启 (本次+开机自动)", OnClicked: func() {
-								if !st.begin("解锁并安装自启") {
+							PushButton{AssignTo: &st.pbGen2Install, Text: "Run Gen2 and install auto-start (this session + boot auto)", OnClicked: func() {
+								if !st.begin("Unlock and install auto-start") {
 									return
 								}
 								go func() {
 									defer st.end()
 									st.sync(func() { st.pbGen2Install.SetEnabled(false) })
 									defer st.sync(func() { st.pbGen2Install.SetEnabled(true) })
-									fmt.Println("== 执行 Gen2 并安装自启 ==")
-									fmt.Println("[Gen2] 步骤1/2: 先解锁本次(临时加载驱动→解锁→默认用完即卸)...")
+									fmt.Println("== Run Gen2 and install auto-start ==")
+									fmt.Println("[Gen2] Step 1/2: first unlock this session (temporarily load drivers -> unlock -> default remove-when-done)...")
 									gen2Main()
-									fmt.Println("[Gen2] 步骤2/2: 安装开机自启 — 驱动部署+Defender 加白 + 登录任务 + Run 键...")
+									fmt.Println("[Gen2] Step 2/2: install boot-time auto-start — driver deploy + Defender whitelist + logon task + Run key...")
 									installDrivers()
 									if err := hxcore.AddDefenderExclusions(); err != nil {
 										st.printDefErr("  [Defender] ", err)
 									} else {
-										fmt.Println("  [Defender] 驱动文件/备份目录已加白")
+										fmt.Println("  [Defender] driver files / backup directory whitelisted")
 									}
 									setRunKey()
 									if err := setupGen2Task(); err != nil {
-										fmt.Println("  [!] 登录自启注册失败:", err)
-										fmt.Println("  [!] 可稍后在 ① 区勾 [Gen2 登录自启] 点[安装所选组件] 补装")
+										fmt.Println("  [!] Logon auto-start registration failed:", err)
+										fmt.Println("  [!] You can later tick [Gen2 logon auto-start] in ① and click [Install selected components] to add it")
 									} else {
-										fmt.Println("  [自启] 注册完成 — 下次登录会自动解锁 Gen2(本次已先解锁, 无需重启)")
+										fmt.Println("  [Auto-start] Registration complete — Gen2 will auto-unlock on next login (already unlocked this session, no reboot needed)")
 										if hxcore.DriverStrategy() == hxcore.DriverStrategyResident {
-											fmt.Println("  [自启] 常驻守护已启用: 登录任务将每分钟自查 Gen2, TLS 丢失自动重训")
+											fmt.Println("  [Auto-start] Resident guardian enabled: the logon task will self-check Gen2 every minute, auto-retraining if TLS is lost")
 										}
 									}
 									st.scanOnce()
@@ -678,7 +678,7 @@ func runGUI() {
 				},
 			},
 			GroupBox{
-				Title:  "③ 操作日志 (实时)",
+				Title:  "③ Operation log (live)",
 				Layout: VBox{},
 				Children: []Widget{
 					TextEdit{AssignTo: &st.teLog, ReadOnly: true, VScroll: true,
@@ -688,19 +688,19 @@ func runGUI() {
 		},
 	}.Create()
 	if createErr != nil {
-		msgbox("50HX 安装器", "GUI 初始化失败: "+createErr.Error()+"\n请使用命令行方式 (50HXInstaller.exe -h)。", mbIconError)
+		msgbox("50HX Installer", "GUI initialization failed: "+createErr.Error()+"\nPlease use the command-line interface (50HXInstaller.exe -h).", mbIconError)
 		return
 	}
 	st.log.mw = st.mw
 	st.log.te = st.teLog
 	AttachLogSink(st.log)
 
-	st.loadPolicyUI() // Gen2 策略回读(UI 线程, Run 之前)
+	st.loadPolicyUI() // Read back Gen2 policy (UI thread, before Run).
 
-	fmt.Println("CMP 50HX 解锁管理器 v3.0.0 已启动(管理员)。")
+	fmt.Println("CMP 50HX Unlock Manager v3.0.0 started (administrator).")
 	go func() {
-		// 打开自动扫描一次: 预勾选 + 顶部提示; 期间禁用执行按钮防并发。
-		// 结果由 applySmartDefaults 打印([i] 已预勾… / [i] 组件均已就绪…)。
+		// Open with one auto-scan: pre-check + top hint; action buttons disabled during the scan to prevent races.
+		// Results are printed by applySmartDefaults ([i] pre-checked... / [i] all components already ready...).
 		st.setActionsEnabled(false)
 		defer st.setActionsEnabled(true)
 		st.scanOnce()
@@ -709,16 +709,16 @@ func runGUI() {
 	st.mw.Run()
 }
 
-// installSelected: 安装所选组件与设置(顺序执行, 输出全部进日志面板)。
-// 分段风格同 CLI 全流程; 不再出现孤立的 [x/8] 编号(那是 install() 的编排编号)。
+// installSelected: installs the selected components and settings (runs sequentially; all output goes to the log panel).
+// Section style matches the CLI full flow; the standalone [x/8] step numbers (those are from install()'s orchestration numbering) are gone.
 func (st *guiState) installSelected(sel map[string]bool) {
 	defer st.end()
 	st.sync(func() { st.pbInstall.SetEnabled(false) })
 	defer st.sync(func() { st.pbInstall.SetEnabled(true) })
 	nameOf := map[string]string{
-		"gsp": "GSP 启用", "drv": "Gen2 驱动部署", "efi": "算力 EFI + 启动项",
-		"task": "Gen2 登录自启", "fast": "关闭快速启动", "aspm": "关闭 ASPM",
-		"perf": "高性能电源计划", "defoff": "关闭 Defender 实时防护",
+		"gsp": "GSP enable", "drv": "Gen2 driver deploy", "efi": "Compute EFI + boot entry",
+		"task": "Gen2 logon auto-start", "fast": "Disable Fast Startup", "aspm": "Disable ASPM",
+		"perf": "High-performance power plan", "defoff": "Disable Defender real-time protection",
 	}
 	var parts []string
 	for _, k := range []string{"gsp", "drv", "efi", "task", "fast", "aspm", "perf", "defoff"} {
@@ -727,93 +727,93 @@ func (st *guiState) installSelected(sel map[string]bool) {
 		}
 	}
 	if len(parts) == 0 {
-		fmt.Println("[i] 未勾选任何组件/设置 — 请先勾选再点[安装所选组件]")
+		fmt.Println("[i] No components / settings ticked — please tick first and then click [Install selected components]")
 		return
 	}
-	fmt.Println("== 执行: " + strings.Join(parts, " / ") + " ==")
+	fmt.Println("== Running: " + strings.Join(parts, " / ") + " ==")
 	if sel["gsp"] {
-		fmt.Println("──── GSP 启用 (EnableGpuFirmware=1, 解锁不黑屏的关键) ────")
+		fmt.Println("──── GSP enable (EnableGpuFirmware=1, key to no-black-screen after unlock) ────")
 		if err := enableGsp(); err != nil {
-			fmt.Println("  [GSP] 失败:", err)
+			fmt.Println("  [GSP] Failed:", err)
 		} else {
-			fmt.Println("  [GSP] EnableGpuFirmware=1 已设置 (重启后 GSP-RM 生效)")
+			fmt.Println("  [GSP] EnableGpuFirmware=1 set (takes effect after reboot via GSP-RM)")
 		}
 	}
 	if sel["drv"] {
-		fmt.Println("──── Gen2 驱动部署 + Defender 排除 (ThrottleStop/WinRing0) ────")
+		fmt.Println("──── Gen2 driver deploy + Defender exclusions (ThrottleStop/WinRing0) ────")
 		installDrivers()
 		if err := hxcore.AddDefenderExclusions(); err != nil {
 			st.printDefErr("  [Defender] ", err)
 		} else {
-			fmt.Println("  [Defender] 驱动文件/备份目录已加白")
+			fmt.Println("  [Defender] driver files / backup directory whitelisted")
 		}
 	}
 	if sel["efi"] {
-		fmt.Println("──── 算力 EFI 部署 + 固件启动项 (双路写入 + 置顶) ────")
+		fmt.Println("──── Compute EFI deploy + firmware boot entry (dual write + set first) ────")
 		installEFI()
 	}
 	if sel["task"] {
-		fmt.Println("──── Gen2 登录自启 (SYSTEM 任务 + Run 键兜底) ────")
+		fmt.Println("──── Gen2 logon auto-start (SYSTEM task + Run key fallback) ────")
 		setRunKey()
 		if err := setupGen2Task(); err != nil {
-			fmt.Println("  [!] 登录自启注册失败:", err)
-			fmt.Println("  [!] 可稍后以管理员运行: 50HXInstaller.exe -task")
+			fmt.Println("  [!] Logon auto-start registration failed:", err)
+			fmt.Println("  [!] You can later run as administrator: 50HXInstaller.exe -task")
 		}
 	}
 	if sel["fast"] || sel["aspm"] || sel["perf"] {
-		fmt.Println("──── 电源设置 (细项; 均可在系统电源选项中改回) ────")
+		fmt.Println("──── Power settings (fine-grained; all revertible from the system Power Options) ────")
 	}
 	if sel["fast"] {
 		if hxcore.FastStartupOn() {
 			if err := hxcore.SetFastStartupOff(); err != nil {
-				fmt.Println("  [电源] 关闭快速启动失败:", err)
+				fmt.Println("  [Power] Failed to disable Fast Startup:", err)
 			} else {
-				fmt.Println("  [电源] 快速启动已关闭 (HiberbootEnabled=0)")
+				fmt.Println("  [Power] Fast Startup disabled (HiberbootEnabled=0)")
 			}
 		} else {
-			fmt.Println("  [电源] 快速启动: 原本已关(OK)")
+			fmt.Println("  [Power] Fast Startup: was already off (OK)")
 		}
 	}
 	if sel["aspm"] {
 		if ac, dc, ok := hxcore.ASPMSavings(); !ok {
-			fmt.Println("  [电源] PCIe ASPM: 本机未公开该设置, 跳过")
+			fmt.Println("  [Power] PCIe ASPM: this machine does not expose this setting, skipping")
 		} else if ac == 0 && dc == 0 {
-			fmt.Println("  [电源] PCIe ASPM: 原本已关(OK)")
+			fmt.Println("  [Power] PCIe ASPM: was already off (OK)")
 		} else {
 			if err := hxcore.SetASPMOff(); err != nil {
-				fmt.Println("  [电源] ASPM 关闭失败:", err)
+				fmt.Println("  [Power] ASPM disable failed:", err)
 			} else {
-				fmt.Printf("  [电源] PCIe ASPM 已关闭(原 AC=%d/DC=%d)\n", ac, dc)
+				fmt.Printf("  [Power] PCIe ASPM disabled (was AC=%d/DC=%d)\n", ac, dc)
 			}
 		}
 	}
 	if sel["perf"] {
 		if hxcore.HighPerfPlanActive() {
-			fmt.Println("  [电源] 电源计划: 已是高性能(OK)")
+			fmt.Println("  [Power] Power plan: already High performance (OK)")
 		} else if err := hxcore.SetHighPerfPlan(); err != nil {
-			fmt.Println("  [电源] 切换高性能计划失败:", err)
+			fmt.Println("  [Power] Failed to switch to High performance plan:", err)
 		} else {
-			fmt.Println("  [电源] 已切换到高性能电源计划 (可在电源选项改回)")
+			fmt.Println("  [Power] Switched to High performance power plan (revertible from Power Options)")
 		}
 	}
 	if sel["defoff"] {
-		fmt.Println("──── Windows Defender 实时防护 ────")
+		fmt.Println("──── Windows Defender real-time protection ────")
 		on, err := hxcore.DefenderRealtimeProtectionOn()
 		if err != nil {
 			st.printDefErr("  [!] ", err)
 		} else if !on {
-			fmt.Println("  [Defender] 实时防护当前已关闭(无需操作)")
+			fmt.Println("  [Defender] Real-time protection is currently off (no action needed)")
 		} else if err := hxcore.SetDefenderRealtimeProtection(false); err != nil {
 			st.printDefErr("  [!] ", err)
 			if !errors.Is(err, hxcore.ErrMpUnavailable) {
-				fmt.Println("  [!] 常见原因: Windows 安全中心开了'篡改防护' — 请先关闭它再重试")
+				fmt.Println("  [!] Common cause: Windows Security Center has 'Tamper Protection' on — please disable it first and retry")
 			}
 		} else {
-			fmt.Println("  [Defender] 实时防护已关闭")
-			fmt.Println("  [Defender] 恢复: 管理员 PowerShell 运行 Set-MpPreference -DisableRealtimeMonitoring $False")
+			fmt.Println("  [Defender] Real-time protection disabled")
+			fmt.Println("  [Defender] Restore: in elevated PowerShell run Set-MpPreference -DisableRealtimeMonitoring $False")
 		}
 	}
-	fmt.Println("== 执行完成, 自动重扫状态 ==")
+	fmt.Println("== Done; auto-rescanning state ==")
 	st.scanOnce()
 	st.applySmartDefaults()
 }

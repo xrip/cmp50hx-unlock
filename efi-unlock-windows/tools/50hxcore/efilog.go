@@ -5,76 +5,90 @@ import (
 	"strings"
 )
 
-// AnalyzeEfiLog: 读 ESP 根目录 50hx_log.txt (EFI 解锁链日志), 按失败特征
-// 分类给出精确解决步骤。SS0 锁定时调用; 返回诊断建议字符串(可多行)。
+// AnalyzeEfiLog reads 50hx_log.txt at the root of the ESP (the EFI
+// unlock-chain log) and, by classifying failure signatures, returns
+// precise remediation steps. Called when SS0 stays locked; returns a
+// (potentially multi-line) diagnostic recommendation string.
 //
-// v2.4.4: 社区 #1 (X99 双卡 code43) 教训 — 相同症状可能来自不同根因:
-//   A. "WPR2 NOT up" + "IMEM[0]=0xffffffff"  → GPU DMA 够不到 >4GB 载荷
-//      = 主板 Above 4G Decoding 未开 (开发机 Z170 开了才成功)
-//   B. "not-OK (m0=0x89 halted)" → booter 注入失败 (时序/槽位问题)
-//   C. 日志显示已 UNLOCKED 但 SS0 锁 → 驱动层覆盖(重跑安装器)
-//   D. 无日志 → EFI 没跑 (启动项未置顶/Secure Boot)
+// v2.4.4 lesson from community #1 (X99 dual-card code 43) — the same
+// symptom can come from different root causes:
+//   A. "WPR2 NOT up" + "IMEM[0]=0xffffffff" → GPU DMA cannot reach >4GB
+//      payload = motherboard Above 4G Decoding is OFF (the dev Z170 only
+//      succeeded with it on).
+//   B. "not-OK (m0=0x89 halted)" → booter injection failed (timing /
+//      slot issue).
+//   C. Log shows UNLOCKED yet SS0 is locked → driver layer overwrote it
+//      (re-run the installer).
+//   D. No log → EFI didn't run (boot entry not set as first / Secure Boot).
 func AnalyzeEfiLog() string {
 	esp := MountESP()
 	if esp == "" {
-		return "  [EFI日志] 无法挂载 ESP(需管理员) — 无法读取解锁日志"
+		return "  [EFI log] Unable to mount the ESP (admin required) — unlock log unreadable"
 	}
 	defer UnmountESP(esp)
-	// v3.0.0: 先确认解锁 EFI 本体是否还在 —— 卸载 EFI 后 ESP 根目录的
-	// 50hx_log.txt 是历史残留, 不能再拿去套"booter 失败/换槽/Above4G"这类
-	// 分析(会给没装 EFI 的用户派无关引导, 社区实机踩过)。
+	// v3.0.0: first confirm whether the unlock EFI binary itself is
+	// still present. After uninstalling the EFI, the 50hx_log.txt on the
+	// ESP root is a historical leftover — running it through the
+	// "booter failed / change slot / Above4G" classifier would dispatch
+	// unrelated boot guidance to users without the EFI installed (real
+	// community machines hit this).
 	efiPath := esp + `:\EFI\50HX\50HXUNLK.EFI`
 	_, efiErr := os.Stat(efiPath)
 	p := esp + ":\\50hx_log.txt"
 	data, err := os.ReadFile(p)
 	if err != nil {
 		if efiErr != nil {
-			return "  [EFI日志] 解锁 EFI 未部署/已卸载(ESP 上无 \\EFI\\50HX\\50HXUNLK.EFI, 也无 50hx_log.txt)\n  算力保持锁定属预期; 想解锁算力: 50HXInstaller.exe 勾选[算力 EFI 部署+固件启动项]安装"
+			return "  [EFI log] Unlock EFI not deployed / uninstalled (no \\EFI\\50HX\\50HXUNLK.EFI and no 50hx_log.txt on the ESP)\n  Compute staying locked is expected; to unlock compute: in 50HXInstaller.exe tick [Compute EFI Deploy + firmware boot entry] and install"
 		}
-		return "  [EFI日志] ESP 上无 50hx_log.txt — EFI 可能没执行\n  请进 BIOS: 将 '50HX Unlock' 置为第一启动项 或 关 Secure Boot"
+		return "  [EFI log] No 50hx_log.txt on the ESP — EFI may not have run\n  Enter the BIOS: set '50HX Unlock' as the first boot entry or disable Secure Boot"
 	}
 	if efiErr != nil {
-		return "  [EFI日志] 注: ESP 根目录的 50hx_log.txt 是历史残留 — 解锁 EFI 已不在(已卸载/未安装)\n  旧日志不代表当前状态; 算力锁定属预期, 想恢复请重装[算力 EFI 部署+固件启动项]"
+		return "  [EFI log] Note: the 50hx_log.txt at the ESP root is a historical leftover — the unlock EFI is no longer present (uninstalled / never installed)\n  The old log does not reflect the current state; compute being locked is expected, to restore it please reinstall [Compute EFI Deploy + firmware boot entry]"
 	}
 	low := strings.ToLower(string(data))
 	hit := func(s string) bool { return strings.Contains(low, strings.ToLower(s)) }
 
-	// 解锁成功标志优先 (注意: "SEC2 unlocked" 仅指核可注入, 非算力解锁!
-	// 必须匹配算力解锁特征 "*** UNLOCKED ***" 或 SS0 实际值)
+	// Unlock-success marker takes precedence (NOTE: "SEC2 unlocked" only
+	// means the microcode is injected — it is NOT compute unlock! We must
+	// match the compute-unlock signature "*** UNLOCKED ***" or the actual
+	// SS0 value).
 	if hit("*** unlocked ***") || hit("already unlocked (ss0/ss1 exact)") {
-		return "  [EFI日志] 解锁链实际已 UNLOCKED — 是驱动层覆盖了状态\n  请重跑一次安装器(重设 GSP)后重启, 或换回作者实测驱动版本"
+		return "  [EFI log] The unlock chain is actually UNLOCKED — the driver layer overwrote the state\n  Please re-run the installer (to re-set GSP) and reboot, or revert to a driver version the author has verified"
 	}
-	// 失败模式 A: DMA 够不到 >4GB (Above 4G 未开)
+	// Failure mode A: DMA cannot reach >4GB (Above 4G off).
 	if hit("wpr2 not up") || (hit("imem[0]=0xffffffff") && hit("fwsec40")) {
-		r := "  [EFI日志] WPR2 拉不起 + DMA 读返回全F\n"
-		r += "  → GPU 访问不到 >4GB 解锁载荷。这是 BIOS 设置问题, 请逐项检查:\n"
-		r += "  1. Above 4G Decoding / 4G以上解码 → Enabled ← 最常见!\n"
-		r += "  2. Resizable BAR / 大BAR → Auto/Enabled (若选项存在)\n"
-		r += "  3. 50HX 换到第一个 PCIe x16 槽(CPU直连)\n"
+		r := "  [EFI log] WPR2 cannot be raised + DMA reads return all-F\n"
+		r += "  → GPU cannot access the >4GB unlock payload. This is a BIOS setting issue; please check each item:\n"
+		r += "  1. Above 4G Decoding / 4G above decoding → Enabled ← most common!\n"
+		r += "  2. Resizable BAR / Large BAR → Auto/Enabled (if the option exists)\n"
+		r += "  3. Move the 50HX to the first PCIe x16 slot (CPU-direct)\n"
 		r += "  4. Fast Boot → Disabled\n"
-		r += "  (X99: Advanced/PCI Subsystem 里找 Above 4G)"
+		r += "  (X99: look under Advanced / PCI Subsystem for Above 4G)"
 		return r
 	}
-	// 失败模式 B: booter HALT 且最终未解锁 (成功日志也有 attempt not-OK 但会续试成功)
+	// Failure mode B: booter HALT and final SS0 still zero (a successful
+	// log may also contain attempt not-OK lines but eventually succeeds).
 	if hit("final]: plm=") && hit("ss0=0x00000000") && (hit("halted") || hit("not-ok")) {
-		r := "  [EFI日志] booter 注入失败(多次 HALT, 最终 SS0 仍为 0)\n"
-		r += "  → 双卡/非第一槽时序问题, 请逐项检查:\n"
-		r += "  1. 50HX 换到第一个 PCIe x16 槽(避开 PLX/桥接)\n"
+		r := "  [EFI log] booter injection failed (multiple HALTs, final SS0 still 0)\n"
+		r += "  → Dual-card / non-first-slot timing issue; please check each item:\n"
+		r += "  1. Move the 50HX to the first PCIe x16 slot (avoid PLX / bridges)\n"
 		r += "  2. Above 4G Decoding → Enabled\n"
 		r += "  3. Fast Boot → Disabled\n"
-		r += "  4. 若为多卡: 暂时拔掉其它卡只留 50HX 测一次"
+		r += "  4. If multi-card: temporarily unplug the other cards and test with only the 50HX"
 		return r
 	}
-	// 失败模式 C (v3.0): EFI 找不到卡 — 旧版只扫 bus 0-7/0-16, AGESA/桥接
-	// 板把独显编到高总线 (微星 B450 实测 bus 0x10=16) 时必然 miss。
+	// Failure mode C (v3.0): EFI cannot find the card — older versions
+	// only scanned bus 0-7 / 0-16, so boards where AGESA / bridges number
+	// the discrete GPU to a high bus (MSI B450 measured at bus 0x10 = 16)
+	// would always miss it.
 	if hit("gpu not found; abort") || hit("not found (both encodings)") {
-		r := "  [EFI日志] EFI 找不到卡: 多为 PCI 总线编号超出旧版扫描范围\n"
-		r += "  (AGESA/微星 B450 等板型把独显编到 bus≥16, 或走 PLX/多级桥接)\n"
-		r += "  → 请用 v3.0 安装器重装解锁 EFI (已支持 CF8 全 256 总线扫描) 后\n"
-		r += "    完全关机再开机一次; 仍失败请把本日志全文贴回 issue"
+		r := "  [EFI log] EFI cannot find the card: usually the PCI bus number is beyond the legacy scan range\n"
+		r += "  (AGESA / MSI B450 etc. enumerate the discrete GPU at bus>=16, or it sits behind PLX / multi-level bridges)\n"
+		r += "  → Please use the v3.0 installer to reinstall the unlock EFI (CF8 full 256-bus scan supported), then\n"
+		r += "    fully power off and boot once; if it still fails, paste the full log back into the issue"
 		return r
 	}
-	// 未知失败: 摘录关键行给用户贴
+	// Unknown failure: pull out the key lines for the user to paste.
 	var key []string
 	for _, ln := range strings.Split(string(data), "\n") {
 		l := strings.ToLower(ln)
@@ -87,5 +101,5 @@ func AnalyzeEfiLog() string {
 			}
 		}
 	}
-	return "  [EFI日志] 未能自动归类, 关键行:\n  " + strings.Join(key, "\n  ")
+	return "  [EFI log] Could not auto-classify; key lines:\n  " + strings.Join(key, "\n  ")
 }

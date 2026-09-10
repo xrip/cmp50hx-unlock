@@ -1,13 +1,19 @@
-// 50HX 一键卸载工具 v3.0.0 (CMP 50HX Windows Unlock Uninstaller)
-// GUI 无窗口版: 双击不弹黑框, 输出入 %TEMP%\50HX_uninstaller.log, 结束弹消息框
-// 移除: 计划任务(含 Gen2 重试任务) / Gen2 Run 键 / 固件启动项 "50HX Unlock"
+// 50HX one-click uninstaller v3.0.0 (CMP 50HX Windows Unlock Uninstaller)
+// GUI no-console build: double-clicking does not pop a console; output
+// goes to %TEMP%\50HX_uninstaller.log and a message box is shown at exit.
+// Removes: scheduled tasks (including the Gen2 retry task) / Gen2 Run
+// key / firmware boot entry "50HX Unlock"
 //
-//	/ ESP 解锁 EFI(含 \EFI\Boot\bootx64.efi 回退副本并还原 .bak)
-//	/ 驱动服务与文件 / EnableGpuFirmware(GSP 恢复默认关)
+//	/ ESP unlock EFI (with \EFI\Boot\bootx64.efi fallback copy and .bak
+//	  restore) / driver services and files / EnableGpuFirmware (restores
+//	  GSP to its default off state).
 //
-// v2.6.0: 全部清理实现上提 50hxcore/uninstall_ops.go — 与安装器 GUI 的
-// 组件级卸载共用同一实现, 消除两份漂移副本。本文件仅保留编排与交互。
-// 电源设置(快速启动/ASPM)不回滚 — 属用户电源偏好, 恢复方法见 README。
+// v2.6.0: all cleanup implementations lifted into 50hxcore/uninstall_ops.go
+// — shared with the installer GUI's component-level uninstall,
+// eliminating the two drifting copies. This file only keeps the
+// orchestration and interaction.
+// Power settings (Fast Startup / ASPM) are NOT rolled back — they are
+// user power preferences; see README for how to restore.
 package main
 
 import (
@@ -26,7 +32,7 @@ import (
 
 var silent bool
 
-// ---- GUI helpers (无 console, 消息框 + 日志) ----
+// ---- GUI helpers (no console, message box + log) ----
 
 const (
 	mbIconInfo  = 0x40
@@ -40,7 +46,7 @@ var (
 )
 
 func msgbox(title, text string, icon uint) {
-	// -y / -silent(自动化) 时不弹框
+	// With -y / -silent (automation) do not pop a dialog.
 	if silent {
 		return
 	}
@@ -74,7 +80,8 @@ func lockOnce(name string) func() {
 	return func() { syscall.CloseHandle(syscall.Handle(h)) }
 }
 
-// selfElevate: 非管理员时 ShellExecute "runas" 重启自身(触发 UAC), 父进程退出
+// selfElevate: when not admin, ShellExecute "runas" relaunches self
+// (triggers UAC); the parent then exits.
 func selfElevate() {
 	exe, _ := os.Executable()
 	verb, _ := syscall.UTF16PtrFromString("runas")
@@ -86,7 +93,7 @@ func selfElevate() {
 		uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)),
 		uintptr(unsafe.Pointer(params)), 0, 1)
 	if r <= 32 {
-		msgbox("50HX 卸载工具", fmt.Sprintf("提权失败(错误码 %d)。\n请右键本程序 -> 以管理员身份运行。", r), mbIconError)
+		msgbox("50HX Uninstaller", fmt.Sprintf("Elevation failed (error code %d).\nPlease right-click this program -> Run as administrator.", r), mbIconError)
 	}
 	os.Exit(0)
 }
@@ -97,104 +104,109 @@ func main() {
 			silent = true
 		}
 	}
-	// GUI 版: 输出镜像到日志
+	// GUI build: mirror output to the log file.
 	setupLog("50HX_uninstaller.log")
 	fmt.Println("==============================================")
-	fmt.Println("  CMP 50HX Windows Unlock 卸载工具 v3.0.0")
-	fmt.Println("  移除: 计划任务 / 解锁启动项 / ESP EFI / Gen2 自启动 / 驱动")
+	fmt.Println("  CMP 50HX Windows Unlock Uninstaller v3.0.0")
+	fmt.Println("  Removes: scheduled tasks / unlock boot entry / ESP EFI / Gen2 auto-start / drivers")
 	fmt.Println("==============================================")
 	if !isAdmin() {
 		if hasArg("-elevated") {
-			// 已提权过一次仍失败(静默提权策略/受限token) -> 禁止再循环, 直接报错
-			msgbox("50HX 卸载工具", "提权失败：当前账户无法获得管理员权限。\n请右键本程序 -> 以管理员身份运行。", mbIconError)
+			// We already tried elevation and still failed (silent-elevation
+			// policy / restricted token) — break the loop and report.
+			msgbox("50HX Uninstaller", "Elevation failed: the current account cannot obtain administrator rights.\nPlease right-click this program -> Run as administrator.", mbIconError)
 			return
 		}
 		selfElevate()
 		return
 	}
 	if lockOnce(`Local\40HXUninstaller_v1`) == nil {
-		msgbox("50HX 卸载工具", "卸载程序已在运行, 请勿重复点击。", mbIconInfo)
+		msgbox("50HX Uninstaller", "The uninstaller is already running, please do not click again.", mbIconInfo)
 		return
 	}
 
-	// 1. 计划任务(旧版开机任务/Gen2 登录任务/重试任务/GSP 修正任务)
-	fmt.Print("[1/8] 删除计划任务 ... ")
+	// 1. Scheduled tasks (legacy boot task / Gen2 logon task / retry task / GSP fix task).
+	fmt.Print("[1/8] Remove scheduled tasks ... ")
 	if delTasks() {
-		fmt.Println("完成")
+		fmt.Println("done")
 	} else {
-		fmt.Println("未找到(跳过)")
+		fmt.Println("not found (skipped)")
 	}
 
-	// 2. Gen2 Run 键
-	fmt.Print("[2/8] 删除 Gen2 登录自启动 ... ")
+	// 2. Gen2 Run key.
+	fmt.Print("[2/8] Remove Gen2 logon auto-start ... ")
 	delRunKey()
-	fmt.Println("完成")
+	fmt.Println("done")
 
-	// 3. 固件启动项
-	fmt.Print("[3/8] 删除固件启动项 '50HX Unlock' ... ")
+	// 3. Firmware boot entry.
+	fmt.Print("[3/8] Remove firmware boot entry '50HX Unlock' ... ")
 	if delBootEntry() {
-		fmt.Println("完成")
+		fmt.Println("done")
 	} else {
-		fmt.Println("未找到(可能已移除)")
+		fmt.Println("not found (may already be removed)")
 	}
 
-	// 4. ESP 解锁 EFI 文件
-	fmt.Print("[4/8] 删除 ESP 解锁 EFI ... ")
+	// 4. ESP unlock EFI files.
+	fmt.Print("[4/8] Remove ESP unlock EFI ... ")
 	if delEspEfi() {
-		fmt.Println("完成")
+		fmt.Println("done")
 	} else {
-		fmt.Println("未找到/跳过")
+		fmt.Println("not found / skipped")
 	}
 
-	// 5. 驱动服务
-	fmt.Println("[5/8] 停止并删除驱动服务...")
+	// 5. Driver services.
+	fmt.Println("[5/8] Stop and remove driver services...")
 	hxcore.UninstallDriverServices()
 
-	// 6. 驱动文件
-	fmt.Println("[6/8] 删除驱动文件...")
+	// 6. Driver files.
+	fmt.Println("[6/8] Remove driver files...")
 	hxcore.UninstallDriverFiles()
 
-	// 6.5 GSP 注册表 (恢复默认关)
-	fmt.Print("[6.5/8] 删除 EnableGpuFirmware (恢复 GSP 默认关) ... ")
+	// 6.5 GSP registry (restore default off).
+	fmt.Print("[6.5/8] Remove EnableGpuFirmware (restore GSP default off) ... ")
 	if delGspKey() {
-		fmt.Println("完成")
+		fmt.Println("done")
 	} else {
-		fmt.Println("未找到(跳过)")
+		fmt.Println("not found (skipped)")
 	}
 
-	// 6.6 ProgramData 残留: gen2_status.txt(诊断会当"结果"显示!) + drivers 备份源 + 策略键
-	fmt.Print("[6.6/8] 清理 %ProgramData%\\50HXUnlock + 策略键 ... ")
+	// 6.6 ProgramData residue: gen2_status.txt (the diagnostic tool
+	// surfaces it as "result"!), the drivers backup source, and the
+	// policy key.
+	fmt.Print("[6.6/8] Clean up %ProgramData%\\50HXUnlock + policy key ... ")
 	delProgramData()
-	fmt.Println("完成")
+	fmt.Println("done")
 
-	// 6.7 Defender 排除清理(安装时加的白名单, 卸载需移除不留残留)
-	fmt.Print("[6.7/8] 清理 Defender 排除项 ... ")
+	// 6.7 Defender exclusion cleanup (the whitelist added by the
+	// installer; uninstall must remove it without leftovers).
+	fmt.Print("[6.7/8] Clean up Defender exclusions ... ")
 	if err := removeDefenderExclusions(); err != nil {
-		fmt.Println("未执行(可忽略):", err)
+		fmt.Println("not executed (ignorable):", err)
 	} else {
-		fmt.Println("完成")
+		fmt.Println("done")
 	}
 
-	// 7. 状态确认
-	fmt.Println("[7/8] 检查残留...")
+	// 7. State confirmation.
+	fmt.Println("[7/8] Check for leftovers...")
 	leftover := checkLeftover()
 
 	fmt.Println()
-	fmt.Println("卸载完成。建议重启电脑。")
-	// v2.6.0: 安装时关掉的快速启动/ASPM 属电源偏好, 卸载不回滚
-	fmt.Println("  注: 安装时调整的电源设置(快速启动/PCIe 链路省电)保留未动, 恢复方法见 README。")
+	fmt.Println("Uninstall complete. A reboot is recommended.")
+	// v2.6.0: Fast Startup / ASPM were turned off by the installer as a
+	// power preference — uninstall does not roll them back.
+	fmt.Println("  Note: power settings adjusted at install time (Fast Startup / PCIe link power saving) were left untouched — see README for how to restore.")
 	if silent {
 		return
 	}
 	icon := uint(mbIconInfo)
-	txt := "卸载完成。\n建议重启电脑。\n" +
-		"\n注: 安装时调整的电源设置(快速启动/PCIe 链路省电)\n保留未动 — 属电源偏好, 恢复方法见 README §2.4。\n"
+	txt := "Uninstall complete.\nA reboot is recommended.\n" +
+		"\nNote: power settings adjusted at install time (Fast Startup / PCIe link power saving)\nwere left untouched — they are power preferences; see README §2.4 for how to restore.\n"
 	if leftover != "" {
 		icon = mbIconError
-		txt += "\n仍有残留:\n" + leftover
+		txt += "\nLeftovers remain:\n" + leftover
 	}
-	txt += "\n详细日志: " + filepath.Join(os.TempDir(), "50HX_uninstaller.log")
-	msgbox("50HX 卸载工具", txt, icon)
+	txt += "\nFull log: " + filepath.Join(os.TempDir(), "50HX_uninstaller.log")
+	msgbox("50HX Uninstaller", txt, icon)
 }
 
 func argIndex(name string) int {
@@ -225,9 +237,11 @@ func isAdmin() bool {
 			&buf[0], uint32(len(buf)), &need); err == nil && buf[0] != 0 {
 			return true
 		}
-		// TokenElevation 可能因受限环境(沙箱/服务)误报 0, 再试 SCM 全权
+		// TokenElevation may falsely report 0 in restricted contexts
+		// (sandbox / service); try SCM with full rights as a fallback.
 	}
-	// 兜底: 能以 ALL_ACCESS 打开服务控制管理器 = 真管理员
+	// Fallback: being able to open the Service Control Manager with
+	// ALL_ACCESS = real administrator.
 	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_ALL_ACCESS)
 	if err == nil {
 		windows.CloseServiceHandle(scm)
@@ -236,7 +250,9 @@ func isAdmin() bool {
 	return false
 }
 
-// ---- v2.6.0: 清理步骤实现已上提 50hxcore/uninstall_ops.go, 以下为编排薄包装 ----
+// ---- v2.6.0: cleanup step implementations are lifted into
+//               50hxcore/uninstall_ops.go — the following are thin
+//               orchestration wrappers ----
 
 func delTasks() bool        { return len(hxcore.UninstallTasks()) > 0 }
 func delRunKey()            { hxcore.UninstallRunKey() }

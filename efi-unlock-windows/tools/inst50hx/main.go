@@ -1,42 +1,42 @@
-// 50HX 一键安装工具 v3.0.0 (CMP 50HX Windows Unlock Installer)
-// 功能:
+// 50HX one-click installer v3.0.0 (CMP 50HX Windows Unlock Installer)
+// Features:
 //
-//	(默认) 安装: GSP 启用(EnableGpuFirmware=1) + ESP 双路部署 50HXUNLK.EFI (V70)
-//	      + BootOrder 置顶 + 驱动 + Gen2 自启动
-//	-gen2        立即执行 Gen2 解锁(供登录自启动调用, 幂等)
-//	-uninstall   卸载(移除启动项/Run键/驱动服务/EnableGpuFirmware)
-//	-status      状态检查
+//	(default) Install: GSP enable (EnableGpuFirmware=1) + dual ESP deploy 50HXUNLK.EFI (V70)
+//	      + BootOrder set-as-first + drivers + Gen2 auto-start
+//	-gen2        Run Gen2 unlock immediately (called by logon auto-start; idempotent)
+//	-uninstall   Uninstall (removes boot entry / Run key / driver services / EnableGpuFirmware)
+//	-status      Status check
 //
-// 资源 embed (v2.5): 50HXUNLK.EFI (V70 解锁版) / ThrottleStop.sys / WinRing0x64.sys
-// v2.6.0 关键修复(社区 #2/#5/#6/#7 + v2.4.5 时代排障结论):
-//  1. EFI 部署失败不再中止安装 — Legacy/MBR(无 ESP)只跳过 EFI 两步, Gen2 任务
-//     照常注册(此前 [5/8] 直接 return, 是"装了驱动开机却不跑 Gen2"的统一根因)
-//  2. 引导模式检测(GetFirmwareType): Legacy → 弹窗给 mbr2gpt 无损转换完整指引
-//  3. 计划任务创建后 schtasks query 二次校验 + 重试; -task 失败以非零码退出
-//     (命令行调用时的 errorlevel 检查从死代码变为有效)
-//  4. 自动关闭快速启动(混合休眠)与 PCIe 链路省电(ASPM) — 前者避免"关机再开
-//     不走完整 UEFI 引导", 后者减少空闲降到 Gen1 被误读为解锁失败
-//  5. Gen2 核心增强: LNKCTL2 读改写(不清高位) + root/GPU 交替重训最多 4 轮 +
-//     以 TLS 目标速率判成败(空闲省电降速 Gen1 不再误报失败)
-// v2.6.0 关键加固(自启动通道设计与并发安全, 回应"多自启动路径怕出问题"):
-//  1. Gen2 单实例内核互斥体(Global\50HXGen2SingleInstance): SYSTEM 任务 / Run 键 /
-//     手动 -gen2 即使并发触发, 也仅一个进程进入"加载-卸载 BYOVD 驱动 + 抢 BAR0"
-//     临界区, 杜绝双进程争用驱动服务名与链路寄存器导致的状态错乱
-//  2. 自启动通道收敛为"两路互斥串行": Run 键登录瞬间先试(可能 GPU 未就绪而失败,
-//     静默交权), SYSTEM 任务延迟 30s 再确认; 其余 13 类路径(HKCU/HKLM Run 之外)
-//     均运行于用户态、无法 sc start 内核驱动, 故不采用(详见设计文档)
-//  3. 定位 50HX 失败重试最多 3 次(间隔 2s), 容忍慢速 GPU 初始化导致的假失败
-// v2.4 关键变更(社区兼容):
-//  1. embed EFI 回到 V70 原版 (793d765e, 用户实测解锁成功) — v2.1/v2.2 精简版失败教训
-//  2. ESP 双路部署: \EFI\50HX\50HXUNLK.EFI (BCD 主路径)
-//     + \EFI\Boot\bootx64.efi (UEFI 标准 fallback, 原文件备份 .50hx.bak)
-//     解决部分主板不认非标准 EFI 路径/忽略 BCD displayorder 导致"装完重启没反应"
-//  3. BootOrder 写入后从固件读回验证, 不在首位时明确弹窗提示 BIOS 手动置顶
-//  4. 关键 BIOS 操作全部进消息框 (社区用户不看 README/日志)
+// Embedded resources (v2.5): 50HXUNLK.EFI (V70 unlock) / ThrottleStop.sys / WinRing0x64.sys
+// v2.6.0 critical fixes (community #2 / #5 / #6 / #7 + v2.4.5-era troubleshooting conclusions):
+//  1. EFI deploy failure no longer aborts install — Legacy/MBR (no ESP) only skips the two EFI steps, Gen2 task
+//     is registered as usual (previously [5/8] returned directly, the unified root cause of "drivers installed but Gen2 doesn't run at boot")
+//  2. Boot-mode detection (GetFirmwareType): Legacy -> popup gives the full mbr2gpt lossless conversion guide
+//  3. After scheduled-task creation, schtasks /query double-checks + retries; -task failures exit with non-zero code
+//     (the errorlevel check on command-line invocation goes from dead code to effective)
+//  4. Auto-disable Fast Startup (hybrid hibernate) and PCIe link power saving (ASPM) — the former avoids "shutdown then power-on
+//     skipping a full UEFI boot", the latter reduces idle downshifts to Gen1 being misread as an unlock failure
+//  5. Gen2 core enhancement: LNKCTL2 read-modify-write (without clearing high bits) + alternating root/GPU retrain up to 4 rounds +
+//     TLS target rate decides success (idle power-saving downshift to Gen1 no longer false-reports failure)
+// v2.6.0 critical hardening (auto-start channel design + concurrency safety; addressing "worry about multiple auto-start paths"):
+//  1. Gen2 single-instance kernel mutex (Global\50HXGen2SingleInstance): SYSTEM task / Run key /
+//     manual -gen2 — even when triggered concurrently, only one process enters the "load/unload BYOVD drivers + grab BAR0"
+//     critical section, eliminating the state corruption caused by two processes contending for driver service names and link registers
+//  2. Auto-start channels converged to "two mutually-exclusive serial paths": Run key tries first at logon (may fail if the GPU isn't ready,
+//     silently cedes), SYSTEM task delays 30s and confirms; the other 13 path types (outside HKCU/HKLM Run)
+//     all run in user mode and cannot `sc start` a kernel driver, so they are not used (see design doc)
+//  3. Locate the 50HX; retry up to 3 times (2s interval), tolerating false failures from slow GPU initialization
+// v2.4 key changes (community compatibility):
+//  1. Embedded EFI reverted to V70 original (793d765e, user-verified unlock success) — the lesson from v2.1/v2.2 stripped-version failures
+//  2. Dual ESP deploy: \EFI\50HX\50HXUNLK.EFI (BCD primary path)
+//     + \EFI\Boot\bootx64.efi (UEFI-standard fallback; original backed up as .50hx.bak)
+//     Fixes the "installed then no effect after reboot" on motherboards that ignore non-standard EFI paths / BCD displayorder
+//  3. After writing BootOrder, read it back from firmware to verify; when not first, explicitly popup to prompt manual BIOS promotion
+//  4. Critical BIOS operations all go through message boxes (community users don't read the README / log)
 //
-// v2.3 关键: EnableGpuFirmware=1 启用 GSP — 50HX 默认 GSP 关(CPU-RM 模式)时,
+// v2.3 key: EnableGpuFirmware=1 enables GSP — 50HX's default GSP-off (CPU-RM mode)
 //
-//	EFI 解锁后 nvlddmkm 拒绝 SEC2 状态 -> Code43 黑屏; GSP-RM 模式能接受解锁.
+//	causes nvlddmkm to reject SEC2 status after EFI unlock -> Code 43 black screen; GSP-RM mode accepts the unlock.
 package main
 
 import (
@@ -68,49 +68,49 @@ const (
 	efiDir    = "\\EFI\\50HX"
 	efiFile   = "50HXUNLK.EFI"
 	bootDesc  = "50HX Unlock"
-	// v2.4: UEFI 标准回退路径 (固件 BootOrder 全部无效/未签名时自动尝试此路径;
-	// 解决部分主板忽略 BCD displayorder / 不认非标准 \EFI\50HX 目录)
+	// v2.4: UEFI-standard fallback path (automatically tried when all firmware BootOrder entries are invalid / unsigned;
+	// fixes motherboards that ignore BCD displayorder / do not recognize non-standard \EFI\50HX directories)
 	efiStdDir = "\\EFI\\Boot"
 	efiStdF   = "bootx64.efi"
-	efiBakExt = ".50hx.bak" // bootx64.efi.50hx.bak 原文件备份
-	// v2.3: GSP 启用注册表 (EnableGpuFirmware=1) — 解锁不黑屏的关键!
-	// 50HX 的显示适配器 Class 子键 (0001 = 40HX; 多卡时需按 AdapterString 找)
+	efiBakExt = ".50hx.bak" // Original-file backup for bootx64.efi.50hx.bak
+	// v2.3: GSP-enable registry (EnableGpuFirmware=1) — key to no-black-screen after unlock!
+	// 50HX display-adapter Class subkey (0001 = 40HX; on multi-GPU systems find by AdapterString)
 	gpuClassPath  = `SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}`
-	gpuClassGUID  = `{4d36e968-e325-11ce-bfc1-08002be10318}` // Driver 值反查用
+	gpuClassGUID  = `{4d36e968-e325-11ce-bfc1-08002be10318}` // Used for the Driver-value reverse-lookup
 	gpuEnableFw   = "EnableGpuFirmware"
 	gpuAdapterStr = "HardwareInformation.AdapterString"
 	gpuAdapter40  = "CMP 50HX"
-	// v2.4.6: Gen2 的 SYSTEM 计划任务名(卸载时按名字删除)
+	// v2.4.6: Gen2 SYSTEM scheduled task name (deleted by name during uninstall)
 	gen2TaskName = "50HX PCIe Gen2 Bring-up"
-	// v2.6.0: Gen2 失败后的自动重试任务(一次性, 成功即删, 卸载链按名清理)
+	// v2.6.0: Gen2 automatic retry task after failure (one-shot; deleted on success; cleaned by name in the uninstall chain)
 	gen2RetryTask = "50HXGen2Retry"
 )
 
 func main() {
-	// GUI 无窗口版(v1.1): 输出全部镜像到日志(默认 %TEMP%\50HX_installer.log, 可 -log 指定)
+	// GUI no-console build (v1.1): all output mirrored to a log (default %TEMP%\50HX_installer.log, override with -log)
 	setupLog("50HX_installer.log")
-	// v2.6.0: 双击(无参数)或 UAC 提权重启(-elevated)默认进入 GUI 管理界面;
-	// 命令行参数(-gen2/-task/-uninstall/-status/-silent/-hard)语义保持不变。
+	// v2.6.0: double-click (no args) or UAC re-elevation (-elevated) defaults to the GUI management window;
+	// command-line flags (-gen2 / -task / -uninstall / -status / -silent / -hard) keep their semantics.
 	if len(os.Args) <= 1 || (len(os.Args) == 2 && os.Args[1] == "-elevated") {
 		runGUI()
 		return
 	}
-	// install/-uninstall 需管理员: 非提升时自动 ShellExecute runas 弹 UAC 重启
+	// install / -uninstall require administrator: when not elevated, automatically ShellExecute runas to pop UAC and relaunch
 	needAdmin := true
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "-gen2", "-gspensure", "-status", "-h", "-help", "--help":
 			needAdmin = false
 		}
-		// -task 需管理员(GUI 双击自动 UAC; gen2/status 等只读或 SYSTEM 任务调用无需)
+		// -task requires admin (GUI double-click auto-UAC; gen2/status etc. read-only or called by SYSTEM task — no admin needed)
 		if os.Args[1] == "-task" {
 			needAdmin = true
 		}
 	}
 	if needAdmin && !isAdmin() {
 		if hasArg("-elevated") {
-			// 已提权过一次仍失败(如静默提权策略下受限token) -> 禁止再循环, 直接报错
-			msgbox("50HX 安装器", "提权失败：当前账户无法获得管理员权限。\n请右键本程序 -> 以管理员身份运行。", mbIconError)
+			// Already tried elevation and still failed (e.g. restricted token under silent-elevation policy) -> break the loop and report directly
+			msgbox("50HX Installer", "Elevation failed: this account cannot get administrator rights.\nPlease right-click this program -> Run as administrator.", mbIconError)
 			return
 		}
 		selfElevate()
@@ -120,7 +120,7 @@ func main() {
 		switch os.Args[1] {
 		case "-gen2":
 			gen2Main()
-			// v3.0.1: 常驻守护 — 由登录任务带 -guard 启动; 驱动保留并每分钟自查 Gen2
+			// v3.0.1: Resident guardian — started by the logon task with -guard; the driver stays loaded and Gen2 is self-checked every minute
 			if hasArg("-guard") && hxcore.DriverStrategy() == hxcore.DriverStrategyResident {
 				residentGuard()
 			}
@@ -135,8 +135,8 @@ func main() {
 			status()
 			return
 		case "-task":
-			// 仅注册 Gen2 登录自启任务(供 -task 模式调用;
-			// 由 Go 构造 /TR 引号, 避免 bat 内嵌引号解析出错/闪退)
+			// Only register the Gen2 logon auto-start task (called by -task mode;
+			// the /TR quoting is built by Go to avoid embedded-quote parsing errors / crashes in the .bat)
 			regTaskOnly()
 			return
 		case "-h", "-help", "--help":
@@ -147,34 +147,34 @@ func main() {
 	install()
 }
 
-// regTaskOnly: 只注册 Gen2 SYSTEM 任务(不安装驱动/EFI/GSP)。
-// -task 模式的最后一步调用本模式 — Go 处理引号。
-// v2.6.0: 失败以非零码退出 — bat 的 errorlevel 检查依赖它(此前恒为 0, 检查是死代码)。
+// regTaskOnly: only registers the Gen2 SYSTEM task (does not install drivers / EFI / GSP).
+// -task mode's last step calls this — Go handles the quoting.
+// v2.6.0: exit with non-zero code on failure — the bat's errorlevel check depends on it (previously always 0, making the check dead code).
 func regTaskOnly() {
 	if !isAdmin() {
-		fmt.Println("[!] 注册计划任务需要管理员权限。")
-		msgbox("50HX 安装器", "注册计划任务需要管理员权限。\n请以管理员身份运行。", mbIconError)
+		fmt.Println("[!] Registering the scheduled task requires administrator rights.")
+		msgbox("50HX Installer", "Registering the scheduled task requires administrator rights.\nPlease run as administrator.", mbIconError)
 		os.Exit(1)
 	}
 	if err := setupGen2Task(); err != nil {
 		fmt.Println("[!]", err)
-		msgbox("50HX 安装器", "Gen2 登录自启任务注册失败:\n"+err.Error()+
-			"\n\n请确认以管理员身份运行后重试。", mbIconError)
+		msgbox("50HX Installer", "Gen2 logon auto-start task registration failed:\n"+err.Error()+
+			"\n\nPlease run as administrator and try again.", mbIconError)
 		os.Exit(1)
 	}
-	// v2.6.0: Run 键 = 登录瞬间先试一次(可能 GPU 未就绪而失败, 静默交权);
-	// SYSTEM 任务延迟 30s 再确认。二者由 gen2Main 的单实例互斥体串行化, 不会并发抢驱动。
+	// v2.6.0: Run key = try once at logon (may fail if GPU isn't ready yet, silently cedes);
+	// SYSTEM task delays 30s to confirm. Both are serialized by gen2Main's single-instance mutex so they can't race for the driver.
 	setRunKey()
-	msgbox("50HX 安装器", "Gen2 登录自启任务已注册。\n登录后会自动执行 Gen2 解锁(静默, 用完即卸)。", mbIconInfo)
+	msgbox("50HX Installer", "Gen2 logon auto-start task registered.\nGen2 unlock will run automatically at next logon (silent, drivers are removed when done).", mbIconInfo)
 }
 
-// selfElevate: 非管理员时 ShellExecute "runas" 重启自身(触发 UAC), 父进程退出
-// GUI 子系统下无黑窗; 提权失败以消息框提示
+// selfElevate: when not admin, ShellExecute "runas" to relaunch self (triggers UAC); the parent exits.
+// Under the GUI subsystem there is no console; elevation failure is shown via a message box.
 func selfElevate() {
 	exe, _ := os.Executable()
 	verb, _ := syscall.UTF16PtrFromString("runas")
 	file, _ := syscall.UTF16PtrFromString(exe)
-	// 追加 -elevated 标记: 新实例若仍非管理员则禁止再次提权(防无限循环)
+	// Append the -elevated marker: if the new instance is still not admin, do not re-elevate (prevents infinite loop)
 	args := append([]string{}, os.Args[1:]...)
 	args = append(args, "-elevated")
 	params, _ := syscall.UTF16PtrFromString(strings.Join(args, " "))
@@ -182,7 +182,7 @@ func selfElevate() {
 		uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)),
 		uintptr(unsafe.Pointer(params)), 0, 1)
 	if r <= 32 {
-		msgbox("50HX 安装器", fmt.Sprintf("提权失败(错误码 %d)。\n请右键本程序 -> 以管理员身份运行。", r), mbIconError)
+		msgbox("50HX Installer", fmt.Sprintf("Elevation failed (error code %d).\nPlease right-click this program -> Run as administrator.", r), mbIconError)
 	}
 	os.Exit(0)
 }
@@ -194,8 +194,8 @@ var (
 const (
 	mbIconInfo  = 0x40
 	mbIconError = 0x10
-	mbIconWarn  = 0x30 // MB_ICONWARNING — v2.6.0: EFI 跳过/部分成功等"可继续但要注意"场景
-	mbYesNo     = 0x04 // MB_YESNO → 返回 IDYES=6 / IDNO=7
+	mbIconWarn  = 0x30 // MB_ICONWARNING — v2.6.0: "can continue but pay attention" scenarios such as EFI skipped / partial success
+	mbYesNo     = 0x04 // MB_YESNO -> returns IDYES=6 / IDNO=7
 )
 
 var (
@@ -204,7 +204,7 @@ var (
 )
 
 func msgbox(title, text string, icon uint) {
-	// -y / -silent(自动化/自启动) 时不弹框
+	// With -y / -silent (automation / auto-start), do not pop a dialog
 	if hasArg("-y") || hasArg("-silent") {
 		return
 	}
@@ -213,7 +213,7 @@ func msgbox(title, text string, icon uint) {
 	procMsgBoxW.Call(0, uintptr(unsafe.Pointer(b)), uintptr(unsafe.Pointer(t)), uintptr(icon))
 }
 
-// msgboxYesNo: 是/否询问。自动模式: -y→true(全自动继续), -silent→false(不打扰)。
+// msgboxYesNo: yes/no prompt. Auto mode: -y -> true (fully automatic continue), -silent -> false (do not disturb).
 func msgboxYesNo(title, text string) bool {
 	if hasArg("-y") {
 		return true
@@ -227,7 +227,7 @@ func msgboxYesNo(title, text string) bool {
 	return r == 6 // IDYES
 }
 
-// setupLog: 输出镜像到日志文件(默认 %TEMP%/<name>, 命令行 -log <file> 优先)
+// setupLog: mirror output to a log file (default %TEMP%/<name>; command-line -log <file> takes precedence)
 func setupLog(defName string) {
 	p := filepath.Join(os.TempDir(), defName)
 	if i := argIndex("-log"); i >= 0 && i+1 < len(os.Args) {
@@ -240,15 +240,15 @@ func setupLog(defName string) {
 	}
 }
 
-// AttachLogSink: v2.6.0 GUI 用 — 用 os.Pipe 把后续 fmt.* 输出分流到 日志文件+UI。
-// fmt.* 每次调用读 os.Stdout 变量; 但 os.Stdout 本身是 *os.File 具体类型,
-// 不能赋 io.Writer, 故替换为管道写端, 由读协程同时写原文件与 GUI 日志面板。
+// AttachLogSink: for the v2.6.0 GUI — use an os.Pipe to split subsequent fmt.* output to BOTH the log file and the UI.
+// fmt.* reads the os.Stdout variable on each call; but os.Stdout itself is a concrete *os.File,
+// which can't be assigned to io.Writer, so we replace it with the pipe's write end; a reader goroutine writes to both the original file and the GUI log panel.
 func AttachLogSink(w io.Writer) {
 	r, pw, err := os.Pipe()
 	if err != nil {
 		return
 	}
-	orig := os.Stdout // setupLog 建立的日志文件(或 GUI 下的无效控制台句柄)
+	orig := os.Stdout // Log file set up by setupLog (or the invalid console handle under the GUI)
 	os.Stdout = pw
 	os.Stderr = pw
 	go func() {
@@ -257,8 +257,8 @@ func AttachLogSink(w io.Writer) {
 		for {
 			n, rerr := r.Read(buf)
 			if n > 0 {
-				orig.Write(buf[:n]) // 落日志文件(GUI 模式下失败可忽略)
-				w.Write(buf[:n])    // 喂 GUI 日志面板
+				orig.Write(buf[:n]) // Write to the log file (failures under GUI mode are ignorable)
+				w.Write(buf[:n])    // Feed the GUI log panel
 			}
 			if rerr != nil {
 				return
@@ -267,7 +267,7 @@ func AttachLogSink(w io.Writer) {
 	}()
 }
 
-// lockOnce: 单实例互斥; 返回 nil 表示已有实例在跑
+// lockOnce: single-instance mutex; returns nil when another instance is already running
 func lockOnce(name string) func() {
 	n, _ := syscall.UTF16PtrFromString(name)
 	h, _, e := procCreateMutex.Call(0, 0, uintptr(unsafe.Pointer(n)))
@@ -300,14 +300,14 @@ func argIndex(name string) int {
 }
 
 func printHelp() {
-	fmt.Println("CMP 50HX Windows 解锁一键安装工具")
-	fmt.Println("  用法: 50HXInstaller.exe            # 安装(需管理员)")
-	fmt.Println("       50HXInstaller.exe -gen2      # 立即执行 Gen2 解锁")
-	fmt.Println("       50HXInstaller.exe -uninstall # 卸载")
-	fmt.Println("       50HXInstaller.exe -status    # 状态")
+	fmt.Println("CMP 50HX Windows one-click unlock installer")
+	fmt.Println("  Usage: 50HXInstaller.exe            # install (requires admin)")
+	fmt.Println("         50HXInstaller.exe -gen2      # run Gen2 unlock now")
+	fmt.Println("         50HXInstaller.exe -uninstall # uninstall")
+	fmt.Println("         50HXInstaller.exe -status    # print status")
 }
 
-// ===================== 底层 =====================
+// ===================== Low level =====================
 
 func isAdmin() bool {
 	var t windows.Token
@@ -320,7 +320,7 @@ func isAdmin() bool {
 			(*byte)(unsafe.Pointer(&e)), uint32(unsafe.Sizeof(e)), &n); err == nil && e != 0 {
 			return true
 		}
-		// TokenElevation 可能因受限环境(沙箱/服务)误报 0, 再试 SCM 全权
+		// TokenElevation may falsely report 0 in restricted contexts (sandbox / service); try SCM full-rights as a fallback
 	}
 	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_ALL_ACCESS)
 	if err == nil {
@@ -330,11 +330,11 @@ func isAdmin() bool {
 	return false
 }
 
-// enableGsp: 设 EnableGpuFirmware=1 (需管理员)
+// enableGsp: sets EnableGpuFirmware=1 (requires admin)
 func enableGsp() error {
 	key := hxcore.FindGpuClassKey()
 	if key == "" {
-		return errors.New("找不到 50HX 的设备注册表键 (Class 子键)")
+		return errors.New("Could not find the 50HX device registry key (Class subkey)")
 	}
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, key, registry.SET_VALUE)
 	if err != nil {
@@ -344,7 +344,7 @@ func enableGsp() error {
 	return k.SetDWordValue(gpuEnableFw, 1)
 }
 
-// disableGsp: 删 EnableGpuFirmware (卸载用, 恢复默认关)
+// disableGsp: deletes EnableGpuFirmware (used by uninstall; restores the default-off state)
 func disableGsp() {
 	key := hxcore.FindGpuClassKey()
 	if key == "" {
@@ -358,48 +358,48 @@ func disableGsp() {
 	k.DeleteValue(gpuEnableFw)
 }
 
-// ensureGspSilent: 确保 GSP 启用 (EnableGpuFirmware=1)。
-// 供 -gen2(登录自启动)调用: 若 GSP 被改回(≠1)则重新启用。
-// 写 HKLM 需管理员: 当前是管理员直接写; 否则注册一次性 SYSTEM 计划任务
-// (SYSTEM 权限写 HKLM 无需 UAC, 无窗口)。
-// 返回 true = GSP 已启用或已安排重设。
+// ensureGspSilent: ensures GSP is enabled (EnableGpuFirmware=1).
+// Called by -gen2 (logon auto-start): if GSP was reset (≠1), re-enable it.
+// Writing HKLM requires admin: if currently admin, write directly; otherwise register a one-shot SYSTEM scheduled task
+// (SYSTEM permissionss can write HKLM without UAC, no window).
+// Returns true = GSP is already enabled or its reset has been scheduled.
 func ensureGspSilent() bool {
 	if hxcore.GspEnabled() {
-		return true // 已启用
+		return true // already enabled
 	}
-	fmt.Println("[GSP] EnableGpuFirmware 被改回, 重新启用...")
+	fmt.Println("[GSP] EnableGpuFirmware was reset, re-enabling...")
 	if isAdmin() {
 		if err := enableGsp(); err != nil {
-			fmt.Println("[GSP] 重设失败:", err)
+			fmt.Println("[GSP] Re-set failed:", err)
 			return false
 		}
-		fmt.Println("[GSP] 已重设 EnableGpuFirmware=1 (重启后 GSP-RM 生效)")
+		fmt.Println("[GSP] EnableGpuFirmware=1 re-set (takes effect after reboot via GSP-RM)")
 		return true
 	}
-	// 非管理员: 用 SYSTEM 计划任务一次性重设 (无 UAC 弹窗)
+	// Not admin: use a one-shot SYSTEM scheduled task to re-set (no UAC prompt)
 	exe, _ := os.Executable()
 	abs, _ := filepath.Abs(exe)
 	tn := "50HXGspEnsure"
 	if out, err := hxcore.RunOut("schtasks.exe", "/create", "/tn", tn,
 		"/tr", fmt.Sprintf("\"%s\" -gspensure -silent", abs),
 		"/sc", "once", "/st", "00:00", "/ru", "SYSTEM", "/f"); err != nil {
-		fmt.Printf("[GSP] 计划任务创建失败: %s\n", strings.TrimSpace(out))
+		fmt.Printf("[GSP] Scheduled task creation failed: %s\n", strings.TrimSpace(out))
 		return false
 	}
 	hxcore.RunOut("schtasks.exe", "/run", "/tn", tn)
 	hxcore.RunOut("schtasks.exe", "/delete", "/tn", tn, "/f")
-	fmt.Println("[GSP] 已通过 SYSTEM 任务重设 EnableGpuFirmware=1")
+	fmt.Println("[GSP] EnableGpuFirmware=1 re-set via SYSTEM task")
 	return true
 }
 
-// gspEnsureMain: -gspensure 模式 (SYSTEM 计划任务调用, 只重设 GSP 后退出)
+// gspEnsureMain: -gspensure mode (called by the SYSTEM scheduled task; only re-sets GSP then exits)
 func gspEnsureMain() {
 	if isAdmin() {
 		if err := enableGsp(); err != nil {
-			fmt.Println("[GSP] gspensure 重设失败:", err)
+			fmt.Println("[GSP] gspensure re-set failed:", err)
 			return
 		}
-		fmt.Println("[GSP] gspensure: EnableGpuFirmware=1 已设置")
+		fmt.Println("[GSP] gspensure: EnableGpuFirmware=1 set")
 	}
 }
 
@@ -411,45 +411,45 @@ func copyEmbedTo(target string, src string) error {
 	return os.WriteFile(target, data, 0o644)
 }
 
-// deployEspEfi: 双路部署 50HXUNLK.EFI 到已挂载的 ESP <esp>。
+// deployEspEfi: dual-path deploy 50HXUNLK.EFI to the already-mounted ESP <esp>.
 //
-//	A. \EFI\50HX\50HXUNLK.EFI   — BCD 启动项引用路径
-//	B. \EFI\Boot\bootx64.efi    — UEFI 标准回退路径 (固件无条件尝试的最后手段;
-//	   解决社区大量"装完重启直接进 Windows 没跑解锁"——主板忽略非标准目录)
+//	A. \EFI\50HX\50HXUNLK.EFI   — BCD boot-entry reference path
+//	B. \EFI\Boot\bootx64.efi    — UEFI-standard fallback path (firmware's unconditional last resort;
+//	   fixes the widespread community case of "installed then rebooted straight into Windows without running the unlock" — motherboards ignoring non-standard directories)
 //
-// 备份规则: 若目标 bootx64.efi 存在且不是本工具部署过的副本, 先备份为
+// Backup rule: if the target bootx64.efi exists and is not a copy already deployed by this tool, back it up first as
 //
-//	bootx64.efi.50hx.bak (卸载时恢复)。已部署过(.bak 已存在)则直接覆盖。
+//	bootx64.efi.50hx.bak (restored on uninstall). If already deployed (.bak exists), overwrite directly.
 //
-// 返回 fallback 是否新备份了原文件。
+// Returns whether the fallback path freshly backed up the original file.
 func deployEspEfi(esp string) (backedUp bool, err error) {
-	// 读取 embed 一次, 两个路径共用
+	// Read embed once; both paths share it
 	data, rerr := embedded.ReadFile("embed/50HXUNLK.EFI")
 	if rerr != nil {
 		return false, rerr
 	}
-	// 写盘前校验 embed 数据本身完整 (PE 头 + 长度合理, 防 embed 损坏)
-	if len(data) < 0x2000 { // < 8KB 的 EFI 文件必为损坏
-		return false, fmt.Errorf("内嵌 50HXUNLK.EFI 数据异常 (%d bytes)", len(data))
+	// Verify the embed data itself before writing (PE header + reasonable length, defend against embed corruption)
+	if len(data) < 0x2000 { // an EFI file smaller than 8 KB is definitely corrupt
+		return false, fmt.Errorf("embedded 50HXUNLK.EFI data is invalid (%d bytes)", len(data))
 	}
 	if !bytes.HasPrefix(data, []byte("MZ")) {
-		return false, errors.New("内嵌 50HXUNLK.EFI 不是有效 PE 镜像(缺 MZ 头)")
+		return false, errors.New("embedded 50HXUNLK.EFI is not a valid PE image (missing MZ header)")
 	}
 
-	// A. 主路径
+	// A. Primary path
 	dirA := esp + ":" + efiDir // Y:\EFI\40HX
 	if merr := os.MkdirAll(dirA, 0o644); merr != nil {
 		return false, merr
 	}
 	pA := filepath.Join(dirA, efiFile)
 	if werr := writeVerified(pA, data); werr != nil {
-		// 写失败或校验不一致 → 删掉可能半截的文件, 避免被 BCD 引用成坏引导
+		// Write failure or verify mismatch -> delete the possibly half-written file so BCD doesn't reference a broken boot
 		os.Remove(pA)
 		return false, werr
 	}
-	fmt.Printf("    [A] %s  (%d bytes, 校验 OK)\n", "\\EFI\\50HX\\"+efiFile, len(data))
+	fmt.Printf("    [A] %s  (%d bytes, verified OK)\n", "\\EFI\\50HX\\"+efiFile, len(data))
 
-	// B. 标准回退路径
+	// B. Standard fallback path
 	dirB := esp + ":" + efiStdDir // Y:\EFI\Boot
 	if merr := os.MkdirAll(dirB, 0o644); merr != nil {
 		return false, merr
@@ -457,53 +457,53 @@ func deployEspEfi(esp string) (backedUp bool, err error) {
 	pB := filepath.Join(dirB, efiStdF) // bootx64.efi
 	pBak := pB + efiBakExt             // bootx64.efi.50hx.bak
 	if _, berr := os.Stat(pBak); berr != nil {
-		// 无备份记录 → 若目标存在且不是我们已部署的副本, 先备份
+		// No backup record -> if the target exists and is not a copy we deployed, back it up first
 		if old, oerr := os.ReadFile(pB); oerr == nil && !bytes.Equal(old, data) {
 			if cerr := os.Rename(pB, pBak); cerr != nil {
-				return false, fmt.Errorf("备份原 %s 失败: %v", pB, cerr)
+				return false, fmt.Errorf("backing up original %s failed: %v", pB, cerr)
 			}
-			fmt.Printf("    [B] 原 %s 已备份为 %s\n", efiStdF, efiStdF+efiBakExt)
+			fmt.Printf("    [B] Original %s backed up as %s\n", efiStdF, efiStdF+efiBakExt)
 			backedUp = true
 		} else if oerr != nil {
-			// 目标不存在: 无备份(本来就是空位)
+			// Target does not exist: no backup (the slot was empty)
 		}
 	}
 	if werr := writeVerified(pB, data); werr != nil {
 		os.Remove(pB)
 		return backedUp, werr
 	}
-	fmt.Printf("    [B] %s  (%d bytes, 校验 OK)\n", "\\EFI\\Boot\\"+efiStdF, len(data))
+	fmt.Printf("    [B] %s  (%d bytes, verified OK)\n", "\\EFI\\Boot\\"+efiStdF, len(data))
 	return backedUp, nil
 }
 
-// writeVerified: 写文件后立即读回比对 — 防止写入中断/半截导致引导损坏。
-// 不一致则删除并返回错误(调用方据此中止, 不让坏文件留在引导路径)。
+// writeVerified: read-back-compare after writing — prevents boot damage from write interruption / half-written files.
+// On mismatch, delete and return an error (the caller aborts, keeping broken files off the boot path).
 func writeVerified(path string, data []byte) error {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return err
 	}
 	rb, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("写后校验读取失败 %s: %v", path, err)
+		return fmt.Errorf("post-write verification read of %s failed: %v", path, err)
 	}
 	if !bytes.Equal(rb, data) {
-		return fmt.Errorf("写后校验不一致 %s (%d ≠ %d bytes)", path, len(rb), len(data))
+		return fmt.Errorf("post-write verification mismatch for %s (%d != %d bytes)", path, len(rb), len(data))
 	}
 	return nil
 }
 
-// alreadyInstalled: 检测是否已安装过(避免无意义/重复的覆盖安装)。
-// 判据: ① 固件启动项 "50HX Unlock" 存在; ② ESP 上已有 \EFI\50HX\50HXUNLK.EFI。
-// 任一命中即认为装过 — 用于重入提示(不会因此阻止用户, 仅弹确认)。
+// alreadyInstalled: detects whether the install was already performed (avoids meaningless / redundant overwrites).
+// Criteria: ① the "50HX Unlock" firmware boot entry exists; ② \EFI\50HX\50HXUNLK.EFI is already on the ESP.
+// Either hit counts as installed — used for re-entry hints (does not block the user, only prompts confirmation).
 func alreadyInstalled() bool {
-	// ① bcdedit 固件枚举(不挂 ESP, 快速)
+	// ① bcdedit firmware enum (no ESP mount, fast)
 	if out, _ := hxcore.RunOut("bcdedit.exe", "/enum", "firmware"); strings.Contains(out, bootDesc) {
 		return true
 	}
-	// ② ESP 文件
+	// ② ESP file
 	esp := hxcore.MountESP()
 	if esp == "" {
-		return false // 挂不上 ESP 时保守视为未装(后面 [5/8] 会报错引导)
+		return false // when the ESP cannot be mounted, conservatively treat as not installed ([5/8] will report the boot error later)
 	}
 	defer hxcore.UnmountESP(esp)
 	if _, err := os.Stat(esp + ":" + efiDir + "\\" + efiFile); err == nil {
@@ -512,32 +512,32 @@ func alreadyInstalled() bool {
 	return false
 }
 
-// verifyBootEntry: 读回 {fwbootmgr} displayorder, 确认 50HX Unlock 是否在首位。
-// 返回 (exists, isFirst, displayOrder描述)。
-// 用 bcdedit /enum firmware 读固件 NVRAM — 若固件忽略 bcdedit 的写入,
-// 这里会如实反映(不在列表/不在首位), 从而让安装器给出 BIOS 手动指引。
-// 注意: bcdedit 输出为 GBK, 中文系统"标识符/说明"是乱码; 但字段值
-// (guid / displayorder / 50HX Unlock / path) 均为 ASCII, 按块解析可靠。
+// verifyBootEntry: reads back the {fwbootmgr} displayorder, confirms whether 50HX Unlock is first.
+// Returns (exists, isFirst, displayOrder description).
+// Uses bcdedit /enum firmware to read the firmware NVRAM — if the firmware ignores what bcdedit wrote,
+// this reflects reality (not in the list / not first), letting the installer emit BIOS manual guidance.
+// Note: bcdedit output is GBK; on Chinese systems "identifier / description" render as mojibake; but the field values
+// (guid / displayorder / 50HX Unlock / path) are all ASCII, so block-based parsing is reliable.
 func verifyBootEntry() (bool, bool, string) {
 	out, err := hxcore.RunOut("bcdedit.exe", "/enum", "firmware")
 	if err != nil {
-		return false, false, "(bcdedit 读取失败: " + err.Error() + ")"
+		return false, false, "(bcdedit read failed: " + err.Error() + ")"
 	}
 	lines := strings.Split(out, "\r\n")
 	if len(lines) < 2 {
 		lines = strings.Split(out, "\n")
 	}
 
-	// 1. 收集 displayorder 下的 GUID 序列(固件实际启动顺序)
+	// 1. Collect the GUID sequence under displayorder (firmware's actual boot order)
 	var order []string
 	for i := 0; i < len(lines); i++ {
 		t := strings.TrimSpace(lines[i])
 		if strings.HasPrefix(t, "displayorder") {
-			// 首个 GUID 可能同行: "displayorder {guid}"
+			// The first GUID can be on the same line: "displayorder {guid}"
 			if m := guidRe().FindString(t); m != "" {
 				order = append(order, strings.Trim(m, "{}"))
 			}
-			// 后续缩进行 {guid}
+			// Subsequent indented {guid}
 			for j := i + 1; j < len(lines); j++ {
 				s := strings.TrimSpace(lines[j])
 				if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
@@ -546,16 +546,16 @@ func verifyBootEntry() (bool, bool, string) {
 					break
 				}
 			}
-			break // displayorder 只在 {fwbootmgr} 段, 取首个即可
+			break // displayorder only appears in the {fwbootmgr} section, the first one is enough
 		}
 	}
 
-	// 2. 找 description 为 "50HX Unlock" 的块的 GUID
+	// 2. Find the GUID of the block whose description is "50HX Unlock"
 	target := ""
 	for i := 0; i < len(lines); i++ {
 		if strings.HasPrefix(strings.TrimSpace(lines[i]), "description") &&
 			strings.Contains(lines[i], bootDesc) {
-			// 往上找最近的 {guid} 行 = 该块 identifier
+			// Walk upward to the nearest {guid} line = this block's identifier
 			for j := i - 1; j >= 0 && j > i-6; j-- {
 				if m := guidRe().FindString(lines[j]); m != "" {
 					target = strings.Trim(m, "{}")
@@ -568,12 +568,12 @@ func verifyBootEntry() (bool, bool, string) {
 	if target == "" {
 		joined := strings.Join(order, " > ")
 		if joined == "" {
-			joined = "(固件无 displayorder 条目)"
+			joined = "(firmware has no displayorder entries)"
 		}
 		return false, false, joined
 	}
 	if len(order) == 0 {
-		return true, false, "(displayorder 为空)"
+		return true, false, "(displayorder is empty)"
 	}
 	isFirst := order[0] == target
 	return true, isFirst, strings.Join(order, " > ")
@@ -583,133 +583,133 @@ var _guidRe = regexp.MustCompile(`\{([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4
 
 func guidRe() *regexp.Regexp { return _guidRe }
 
-// ===================== 安装 =====================
+// ===================== Install =====================
 
-// applyPowerSettings: 快速启动 + PCIe ASPM 两项电源优化(v2.6.0 [3.6/8] 段抽取,
-// v2.6.0 GUI 策略页复用)。幂等: 原本已关则不动; 返回逐项说明行。
+// applyPowerSettings: two power optimizations — Fast Startup + PCIe ASPM (extracted from the v2.6.0 [3.6/8] step,
+// reused by the v2.6.0 GUI policy page). Idempotent: leaves alone if already off; returns per-item note lines.
 func applyPowerSettings() []string {
 	notes := []string{}
 	if hxcore.FastStartupOn() {
 		if err := hxcore.SetFastStartupOff(); err != nil {
-			notes = append(notes, fmt.Sprintf("快速启动关闭失败: %v (不影响安装, 建议电源选项手动关)", err))
+			notes = append(notes, fmt.Sprintf("Disabling Fast Startup failed: %v (does not block install, recommend turning it off manually in Power Options)", err))
 		} else {
-			notes = append(notes, "快速启动已关闭(原为开): 关机将走完整 UEFI 引导; 电源选项可恢复")
+			notes = append(notes, "Fast Startup disabled (was on): shutdown will now go through a full UEFI boot; Power Options can revert this")
 		}
 	} else {
-		notes = append(notes, "快速启动: 原本已关(OK)")
+		notes = append(notes, "Fast Startup: was already off (OK)")
 	}
 	if ac, dc, ok := hxcore.ASPMSavings(); !ok {
-		notes = append(notes, "PCIe ASPM: 本机未公开该设置, 跳过")
+		notes = append(notes, "PCIe ASPM: this machine does not expose this setting, skipping")
 	} else if ac == 0 && dc == 0 {
-		notes = append(notes, "PCIe ASPM: 原本已关(OK)")
+		notes = append(notes, "PCIe ASPM: was already off (OK)")
 	} else {
 		if err := hxcore.SetASPMOff(); err != nil {
-			notes = append(notes, fmt.Sprintf("ASPM 关闭失败: %v", err))
+			notes = append(notes, fmt.Sprintf("Disabling ASPM failed: %v", err))
 		} else {
-			notes = append(notes, fmt.Sprintf("PCIe ASPM 已关闭(原 AC=%d/DC=%d): 减少空闲降到 Gen1; 恢复: powercfg 命令见 README", ac, dc))
+			notes = append(notes, fmt.Sprintf("PCIe ASPM disabled (was AC=%d/DC=%d): reduces idle downshift to Gen1; revert with the powercfg command in the README", ac, dc))
 		}
 	}
 	return notes
 }
 
-// installEFI: ESP 双路部署 50HXUNLK.EFI + 固件启动项(v2.6.0 [5/8]+[6/8] 段抽取,
-// v2.6.0 GUI 组件安装页复用)。返回 EFI 是否部署成功;
-// [7/8] Gen2 任务注册不依赖此结果(EFI 失败只跳过 EFI 两步 — 社区 #2/#5/#6/#7 统一根因修复)。
+// installEFI: dual-path ESP deploy of 50HXUNLK.EFI + firmware boot entry (extracted from v2.6.0 [5/8]+[6/8] steps,
+// reused by the v2.6.0 GUI components page). Returns whether the EFI deploy succeeded;
+// [7/8] Gen2 task registration does NOT depend on this (an EFI failure only skips the two EFI steps — the unified fix for community #2/#5/#6/#7).
 func installEFI() bool {
-	//    主路径  \EFI\50HX\50HXUNLK.EFI  — BCD 启动项引用
-	//    fallback \EFI\Boot\bootx64.efi   — UEFI 标准回退路径, 解决部分主板
-	//    忽略 BCD displayorder / 不认非标准目录(社区"装完重启没反应"主因)。
-	//    原 bootx64.efi 备份为 bootx64.efi.50hx.bak, 卸载时恢复。
+	//    Primary path  \EFI\50HX\50HXUNLK.EFI  — BCD boot entry reference
+	//    fallback \EFI\Boot\bootx64.efi   — UEFI-standard fallback, fixes motherboards that
+	//    ignore BCD displayorder / do not recognize non-standard directories (the main community cause of "installed then no effect after reboot").
+	//    Original bootx64.efi is backed up as bootx64.efi.50hx.bak; restored on uninstall.
 	efiOK := false
-	fmt.Println("    · 部署解锁 EFI 到系统 EFI 分区(双路)...")
+	fmt.Println("    · Deploying unlock EFI to the system EFI partition (dual path)...")
 	esp := hxcore.MountESP()
 	if esp == "" {
 		if hxcore.FirmwareIsLegacy() {
-			fmt.Println("[!] 本系统为传统 BIOS(Legacy)+MBR 引导 — 没有 EFI 分区, 解锁 EFI 无法部署。")
-			fmt.Println("    算力解锁需要 UEFI+GPT: 请先用微软 mbr2gpt 无损转换(完整步骤见弹窗),")
-			fmt.Println("    转换完成并改 UEFI 引导后重跑本安装器。")
-			fmt.Println("    [i] Gen2 登录自启不受影响, 继续注册(见 [7/8])。")
-			msgbox("50HX 安装器 (需要先转换硬盘为 GPT)",
-				"本系统是传统 BIOS(Legacy)+MBR 引导, 没有 EFI 分区,\n"+
-					"算力解锁 EFI 无法部署 — 这就是\"EFI 装不上\"的原因。\n\n"+
-					"请先转成 UEFI+GPT(微软官方无损转换, 不动数据):\n"+
-					"  1. 备份重要数据; 确认未启用 BitLocker(有则先暂停)\n"+
-					"  2. 管理员命令提示符运行:  mbr2gpt /validate /allowfullos\n"+
-					"  3. 显示 Validation completed successfully 后运行:\n"+
+			fmt.Println("[!] This system uses Legacy BIOS+MBR boot — there is no EFI partition, the unlock EFI cannot be deployed.")
+			fmt.Println("    Compute unlock requires UEFI+GPT: please use Microsoft mbr2gpt for a lossless conversion first (full steps in the popup),")
+			fmt.Println("    then change boot to UEFI and re-run this installer.")
+			fmt.Println("    [i] Gen2 logon auto-start is unaffected; continuing to register it (see [7/8]).")
+			msgbox("50HX Installer (convert disk to GPT first)",
+				"This system uses Legacy BIOS+MBR boot, there is no EFI partition,\n"+
+					"the compute-unlock EFI cannot be deployed — this is why \"the EFI install doesn\\'t work\".\n\n"+
+					"Please first convert to UEFI+GPT (Microsoft's official lossless conversion, no data touched):\n"+
+					"  1. Back up important data; make sure BitLocker is NOT enabled (suspend it first if it is)\n"+
+					"  2. In an administrator command prompt run:  mbr2gpt /validate /allowfullos\n"+
+					"  3. After seeing Validation completed successfully, run:\n"+
 					"        mbr2gpt /convert /allowfullos\n"+
-					"  4. 重启进 BIOS, 把启动模式从 Legacy 改为 UEFI(关 CSM)\n"+
-					"  5. 进 Windows 后重新运行本安装器\n\n"+
-					"注意: 转换不可逆; 需 Win10 1703+ / Win11 且主板支持 UEFI。\n"+
-					"本次安装将继续完成 Gen2 部分(算力解锁等转换后重跑安装器)。",
+					"  4. Reboot into the BIOS and change the boot mode from Legacy to UEFI (disable CSM)\n"+
+					"  5. After entering Windows, re-run this installer\n\n"+
+					"Note: the conversion is irreversible; requires Win10 1703+ / Win11 and a UEFI-capable motherboard.\n"+
+					"This install will continue and finish the Gen2 portion (compute unlock will take effect after the conversion and re-running the installer).",
 				mbIconWarn)
 		} else {
-			fmt.Println("[!] 无法挂载 EFI 分区(mountvol /S 失败)")
-			fmt.Println("    系统是 UEFI, 常见原因: BitLocker/第三方加密未暂停、ESP 分区异常。")
-			fmt.Println("    可手动: mountvol S: /S, 复制 50HXUNLK.EFI 到 S:\\EFI\\50HX\\, mountvol S: /D")
-			msgbox("50HX 安装器 (EFI 分区挂载失败)",
-				"无法挂载 EFI 分区 (mountvol /S 失败), 解锁 EFI 本次未部署。\n"+
-					"系统引导不受影响。\n\n"+
-					"常见原因: BitLocker/第三方加密未暂停、ESP 分区异常。\n"+
-					"可手动部署(见日志与《EFI应急修复指南.md》)。\n\n"+
-					"本次安装将继续完成 Gen2 部分, 算力解锁待 EFI 部署成功后生效。",
+			fmt.Println("[!] Unable to mount the EFI partition (mountvol /S failed)")
+			fmt.Println("    The system is UEFI; common causes: BitLocker / third-party encryption not suspended, abnormal ESP partition.")
+			fmt.Println("    Manual workaround: mountvol S: /S, copy 50HXUNLK.EFI to S:\\EFI\\50HX\\, mountvol S: /D")
+			msgbox("50HX Installer (EFI partition mount failed)",
+				"Unable to mount the EFI partition (mountvol /S failed); the unlock EFI was not deployed this run.\n"+
+					"System boot is unaffected.\n\n"+
+					"Common causes: BitLocker / third-party encryption not suspended, abnormal ESP partition.\n"+
+					"You can deploy manually (see the log and \"EFI emergency repair guide.md\").\n\n"+
+					"This install will continue and finish the Gen2 portion; compute unlock takes effect once the EFI is deployed.",
 				mbIconWarn)
 		}
 		return false
 	}
-	fmt.Printf("    ESP 挂载于 %s: \\\n", esp)
+	fmt.Printf("    ESP mounted at %s: \\\\\\n", esp)
 	fb, err := deployEspEfi(esp)
 	hxcore.UnmountESP(esp)
 	if err != nil {
-		fmt.Println("[!] 复制 EFI 失败:", err)
-		msgbox("50HX 安装器 (EFI 写入失败)",
-			"复制解锁 EFI 到 ESP 失败(已做写后校验, 坏文件不会残留):\n"+err.Error()+
-				"\n\n系统引导未受影响, 重启应能正常进 Windows。\n\n"+
-				"如需手动部署, 见同目录《EFI应急修复指南.md》中\n"+
-				"“手动部署”一节。\n\n"+
-				"本次安装将继续完成 Gen2 部分。", mbIconWarn)
+		fmt.Println("[!] Failed to copy EFI:", err)
+		msgbox("50HX Installer (EFI write failed)",
+			"Copying the unlock EFI to the ESP failed (post-write verify was done, no broken file left behind):\n"+err.Error()+
+				"\n\nSystem boot is unaffected; a reboot should still enter Windows normally.\n\n"+
+				"For manual deployment, see \"EFI emergency repair guide.md\" in this directory:\n"+
+				"the \"manual deployment\" section.\n\n"+
+				"This install will continue and finish the Gen2 portion.", mbIconWarn)
 		return false
 	}
 	if fb {
-		fmt.Println("    [!] 检测到原 bootx64.efi, 已备份为 bootx64.efi.50hx.bak")
+		fmt.Println("    [!] Original bootx64.efi detected; backed up as bootx64.efi.50hx.bak")
 	}
 	efiOK = true
 
-	// BootOrder (v2.4: 写回验证 + BIOS 指引弹框); 仅 EFI 部署成功才执行
-	fmt.Println("    · 设置固件启动项(50HX Unlock 置顶)...")
+	// BootOrder (v2.4: write-back verify + BIOS-guidance popup); only runs when EFI deploy succeeded
+	fmt.Println("    · Setting the firmware boot entry (50HX Unlock set as first)...")
 	bootOK := false
 	if err := setupBootEntry(); err != nil {
-		fmt.Println("[!] 自动设置启动项失败:", err)
+		fmt.Println("[!] Auto-set boot entry failed:", err)
 	} else {
 		if ex, first, ord := verifyBootEntry(); ex {
 			bootOK = first
 			if first {
-				fmt.Println("    启动项已置顶并验证通过 (固件 displayorder 首位)")
+				fmt.Println("    Boot entry set as first and verified (first in firmware displayorder)")
 			} else {
-				fmt.Println("    [!] 启动项已创建, 但不在 displayorder 首位:")
-				fmt.Println("        当前固件顺序: " + ord)
-				fmt.Println("        请进 BIOS 手动将 '50HX Unlock' 设为第一启动项(见弹窗)")
+				fmt.Println("    [!] Boot entry was created, but it is NOT first in displayorder:")
+				fmt.Println("        Current firmware order: " + ord)
+				fmt.Println("        Please enter the BIOS and manually set '50HX Unlock' as the first boot entry (see popup)")
 			}
 		} else {
-			fmt.Println("    [!] 未能在固件启动列表中找到 '50HX Unlock' 项")
-			fmt.Println("        (部分主板忽略 BCD 写入, 请进 BIOS 手动添加/置顶)")
+			fmt.Println("    [!] Could not find the '50HX Unlock' entry in the firmware boot list")
+			fmt.Println("        (some motherboards ignore BCD writes; please add / set as first in the BIOS manually)")
 		}
 	}
 	if !bootOK {
-		// BIOS 指引弹窗 (社区用户不看日志/README 的关键一步)
-		msgbox("50HX 安装器 (重要: 请按提示操作)",
-			"自动启动项未被固件接受。\n"+
-				"请重启并按 Del/F2 进 BIOS, 完成以下设置(否则不解锁):\n\n"+
-				"1. 关闭 Secure Boot(已开则未签名 EFI 会被拒)\n"+
-				"2. 关闭 Fast Boot / 快速启动(若有)\n"+
-				"3. 在 [启动顺序/Boot Priority] 中把 '50HX Unlock' 设为第一项\n"+
-				"   或手动从启动设备选择 \\EFI\\50HX\\50HXUNLK.EFI\n"+
-				"4. 若列表只有 Windows Boot Manager:\n"+
-				"   - 部分主板需关闭 CSM(纯 UEFI)后才会出现该启动项\n"+
-				"   - 或直接选 UEFI 盘符启动(走 bootx64 回退)\n\n"+
-				"安装器已把解锁 EFI 同时部署到:\n"+
-				"  \\EFI\\50HX\\50HXUNLK.EFI  (BCD 路径)\n"+
-				"  \\EFI\\Boot\\bootx64.efi    (标准回退路径)\n\n"+
-				"详细日志: "+filepath.Join(os.TempDir(), "50HX_installer.log"),
+		// BIOS guidance popup (the key step for community users who don't read the log / README)
+		msgbox("50HX Installer (IMPORTANT: please follow the steps)",
+			"The auto-created boot entry was not accepted by the firmware.\n"+
+				"Please reboot and press Del/F2 to enter the BIOS; complete the following (otherwise the unlock will not happen):\n\n"+
+				"1. Disable Secure Boot (if it is on, unsigned EFI is rejected)\n"+
+				"2. Disable Fast Boot / quick boot if present\n"+
+				"3. In [Boot Priority / Boot Order], set '50HX Unlock' as the first entry\n"+
+				"   or manually pick the boot device \\EFI\\50HX\\50HXUNLK.EFI\n"+
+				"4. If the list shows only Windows Boot Manager:\n"+
+				"   - Some motherboards only show this boot entry after disabling CSM (pure UEFI)\n"+
+				"   - Or boot directly from the UEFI disk (uses the bootx64 fallback)\n\n"+
+				"The installer deploys the unlock EFI to BOTH:\n"+
+				"  \\EFI\\50HX\\50HXUNLK.EFI  (BCD path)\n"+
+				"  \\EFI\\Boot\\bootx64.efi    (standard fallback path)\n\n"+
+				"Detailed log: "+filepath.Join(os.TempDir(), "50HX_installer.log"),
 			mbIconError)
 	}
 	return efiOK
@@ -718,192 +718,192 @@ func installEFI() bool {
 func install() {
 	fmt.Println("==============================================")
 	fmt.Println("  CMP 50HX Windows Unlock Installer v3.0.0")
-	fmt.Println("  Tensor 解锁(EFI V70 + GSP 启用) + PCIe Gen2 + 自启动")
+	fmt.Println("  Tensor unlock(EFI V70 + GSP enable) + PCIe Gen2 + auto-start")
 	fmt.Println("==============================================")
 
 	if !isAdmin() {
-		fmt.Println("[!] 需要管理员权限。")
-		msgbox("50HX 安装器", "需要管理员权限。\n请右键本程序 -> 以管理员身份运行。", mbIconError)
+		fmt.Println("[!] Administrator requiredpermissions。")
+		msgbox("50HX Installer", "Administrator permissions are required.\nPlease right-click this program -> Run as administrator.", mbIconError)
 		return
 	}
 	if lockOnce(`Local\40HXInstaller_v1`) == nil {
-		msgbox("50HX 安装器", "安装器已在运行, 请勿重复点击。", mbIconInfo)
+		msgbox("50HX Installer", "Installer is already running. Please do not click again.", mbIconInfo)
 		return
 	}
 
-	// 0. 重入检测: 已装过(固件启动项/GSP 键已存在) → 确认后再覆盖,
-	//    避免用户误以为需要反复安装、或在不知情下覆盖现有部署。
+	// 0. Re-entry detection: previously installed (firmware boot entry / GSP key present) -> ask for confirmation before overwrite,
+	//    to prevent users from thinking they need to reinstall repeatedly, or overwriting an existing deploy unawares.
 	if alreadyInstalled() {
-		fmt.Println("[!] 检测到 50HX 解锁已安装过(启动项/GSP 键存在)。")
-		if !msgboxYesNo("50HX 安装器",
-			"检测到 50HX 解锁已安装过。\n\n"+
-				"再次安装会覆盖现有部署(驱动与启动项会更新, 不会损坏系统引导)。\n"+
-				"如果是想修复异常/升级, 选\"是\"继续;\n"+
-				"如果只是误打开, 选\"否\"保持现状即可。\n\n"+
-				"继续重新安装?") {
-			fmt.Println("已取消 — 保持现有安装不变。")
+		fmt.Println("[!] Detected a previous 50HX unlock installation (boot entry / GSP key present).")
+		if !msgboxYesNo("50HX Installer",
+			"A previous 50HX unlock installation was detected.\n\n"+
+				"Reinstalling will overwrite the existing deployment (drivers and boot entry will be refreshed; system boot will not be damaged).\n"+
+				"If you want to repair an abnormal state or upgrade, select \"Yes\" to continue;\n"+
+				"if you opened this by mistake, select \"No\" to keep it as-is.\n\n"+
+				"Continue with reinstall?") {
+			fmt.Println("cancelled - keeping existing install unchanged.")
 			return
 		}
-		fmt.Println("    用户确认, 继续覆盖安装。")
+		fmt.Println("    user confirmed, continuing overwrite install.")
 	}
 
-	// 1. GPU 检测
-	fmt.Print("[1/8] 检测 GPU ... ")
+	// 1. GPU detection
+	fmt.Print("[1/8] detection GPU ... ")
 	if !hxcore.FindGPU() {
-		fmt.Println("未找到 " + gpuVenDev)
-		fmt.Println("[!] 未检测到 CMP 50HX。中止。")
-		msgbox("50HX 安装器", "未检测到 CMP 50HX 显卡 (VEN_10DE&DEV_1E09)。\n安装中止。", mbIconError)
+		fmt.Println("not found " + gpuVenDev)
+		fmt.Println("[!] CMP 50HX not detected. Aborted.")
+		msgbox("50HX Installer", "CMP 50HX GPU (VEN_10DE&DEV_1E09) not detected.\nInstallation aborted.", mbIconError)
 		return
 	}
-	fmt.Println("CMP 50HX 已找到")
+	fmt.Println("CMP 50HX found")
 
 	// 2. Secure Boot
-	fmt.Print("[2/8] Secure Boot 检查 ... ")
+	fmt.Print("[2/8] Secure Boot check ... ")
 	if hxcore.SecureBootOn() {
-		fmt.Println("开启!")
-		fmt.Println("[!] Secure Boot 开启时, 未签名 EFI(40HXUNLK) 会被固件拒绝。")
-		msgbox("50HX 安装器 (需要关闭 Secure Boot)",
-			"检测到 Secure Boot 开启, 未签名的解锁 EFI 会被固件拒绝。\n\n"+
-				"请重启进 BIOS 关闭后再运行本安装器:\n"+
-				"  1. 重启, 开机按 Del / F2(部分主板 F1/F10/F12)进 BIOS\n"+
-				"  2. 找 Security / Boot / 启动 选项卡\n"+
-				"  3. 将 Secure Boot 设为 Disabled\n"+
-				"     (若灰显, 先设 CSM/兼容模式 或恢复默认安全设置)\n"+
-				"  4. 保存退出(F10)后重新运行本程序\n\n"+
-				"这是解锁必需的: 50HX 解锁 EFI 无微软签名。",
+		fmt.Println("on!")
+		fmt.Println("[!] When Secure Boot is on, the unsigned EFI (40HXUNLK) will be rejected by firmware.")
+		msgbox("50HX Installer (Secure Boot must be disabled)",
+			"Secure Boot is enabled - the unsigned unlock EFI will be rejected by firmware.\n\n"+
+				"Please reboot, enter the BIOS to disable it, then run this installer:\n"+
+				"  1. Reboot and press Del / F2 (some boards use F1/F10/F12) to enter the BIOS\n"+
+				"  2. Find the Security / Boot / Start tab\n"+
+				"  3. Set Secure Boot to Disabled\n"+
+				"     (if greyed out, first enable CSM / compatibility mode or restore default safe settings)\n"+
+				"  4. Save and exit (F10), then re-run this program\n\n"+
+				"This is required for the unlock: the 50HX unlock EFI has no Microsoft signature.",
 			mbIconError)
 		return
 	}
-	fmt.Println("关闭/不可用(OK)")
+	fmt.Println("disabled / not available (OK)")
 
-	// 3. 测试签名 (v2.5 不需要 — BYOVD 预签名驱动普通模式即可加载)
-	fmt.Print("[3/8] 测试签名 ... ")
+	// 3. Test signing (v2.5 no longer needed - BYOVD pre-signed drivers load in normal mode)
+	fmt.Print("[3/8] Test signing ... ")
 	if hxcore.TestSigningOn() {
-		fmt.Println("已开启 — v2.5 不需要, 装完可 bcdedit /set testsigning off 关闭")
+		fmt.Println("on - v2.5 does not need it; after install run 'bcdedit /set testsigning off' to disable")
 	} else {
-		fmt.Println("关闭(OK) — v2.5 全程免测试签名")
+		fmt.Println("disabled (OK) - v2.5 requires no test signing")
 	}
 
-	// 3.5 GSP 启用 (v2.3: 解锁不黑屏的关键!)
-	// 50HX 默认 GSP 关(CPU-RM 模式) -> EFI 解锁后 nvlddmkm 拒绝 -> Code43 黑屏
-	// EnableGpuFirmware=1 -> GSP-RM 管理 SEC2/booter -> 接受解锁状态
-	fmt.Print("[3.5/8] 启用 GSP (EnableGpuFirmware) ... ")
+	// 3.5 GSP enable (v2.3: key to avoiding a black screen after unlock!)
+	// 50HX default GSP off (CPU-RM mode) -> EFI after unlock nvlddmkm rejects -> Code 43 black screen
+	// EnableGpuFirmware=1 -> GSP-RM manages SEC2/booter -> accepts unlock status
+	fmt.Print("[3.5/8] Enable GSP (EnableGpuFirmware) ... ")
 	if hxcore.GspEnabled() {
 		if sub, _, fw := hxcore.GspDiag(); sub != "" {
-			fmt.Printf("已启用(OK) — Class\\%s EnableGpuFirmware=%d\n", sub, fw)
+			fmt.Printf("enabled (OK) - Class\\%s EnableGpuFirmware=%d\n", sub, fw)
 		} else {
-			fmt.Println("已启用(OK)")
+			fmt.Println("enabled (OK)")
 		}
 	} else {
 		if err := enableGsp(); err != nil {
-			// v2.4.1: 附带 AdapterString 诊断 — 伪装驱动(雨糖识别成2070等)会命中此分支
+			// v2.4.1: include AdapterString diagnostics - disguised drivers (e.g. recognised as 2070) hit this branch
 			_, adapterDiag, _ := hxcore.GspDiag()
-			fmt.Println("设置失败:", err)
-			if adapterDiag != "" && !strings.Contains(adapterDiag, "无 CMP 50HX") {
-				fmt.Println("    [!] 实际 AdapterString:", adapterDiag)
+			fmt.Println("set failed:", err)
+			if adapterDiag != "" && !strings.Contains(adapterDiag, "no CMP 50HX") {
+				fmt.Println("    [!] Actual AdapterString:", adapterDiag)
 			} else if adapterDiag != "" {
 				fmt.Println("    [!]", adapterDiag)
 			}
-			fmt.Println("    [!] 若驱动是伪装版(识别成 2070 等): 换未伪装版驱动或手动设 GSP")
-			msgbox("50HX 安装器", "设置 EnableGpuFirmware=1 失败(需管理员)。\n解锁后可能黑屏/掉驱动。\n错误: "+err.Error()+"\n若驱动是伪装版(识别成2070等),请换未伪装驱动或用 -status 查 AdapterString。", mbIconError)
+			fmt.Println("    [!] If this is a disguised driver (reported as 2070, etc.): swap it for a non-disguised driver or set GSP manually")
+			msgbox("50HX Installer", "Setting EnableGpuFirmware=1 failed (administrator required).\nAfter unlock you may see a black screen or driver drop.\nError: "+err.Error()+"\nIf this is a disguised driver (reported as 2070, etc.), please swap it for a non-disguised driver or run -status to check AdapterString.", mbIconError)
 			return
 		}
-		fmt.Println("已设 EnableGpuFirmware=1 (重启生效)")
-		fmt.Println("    [!] GSP 必需: 否则 EFI 解锁后驱动不认 -> Code43 黑屏")
+		fmt.Println("Set EnableGpuFirmware=1 (takes effect after reboot)")
+		fmt.Println("    [!] GSP required: otherwise the driver won't accept the post-unlock state -> Code 43 black screen")
 	}
 
-	// 3.6 系统电源设置 (v2.6.0: 社区 v2.4.5 排障结论)
-	//     快速启动: "关机→再开"走休眠恢复, 不做完整 UEFI 引导, EFI 可能不跑
-	//     PCIe ASPM: 开启时空闲会降到 Gen1, 登录后实测容易被误读成"Gen2 失败"
-	//     两项幂等设置, 只在当前为开时改; 均可在电源选项恢复, 不碰其他电源策略
-	fmt.Print("[3.6/8] 电源设置(快速启动 + PCIe 链路省电) ... ")
+	// 3.6 system power settings (v2.6.0: community v2.4.5 troubleshooting conclusions)
+	//     Fast Startup: "shutdown then power on" goes through hibernate resume, skipping a full UEFI boot - the EFI may not run
+	//     PCIe ASPM: when enabled, idle downshifts to Gen1; after logon this can be misread as "Gen2 failed"
+	//     Both are idempotent; only modified when currently enabled; both can be restored from the power options; other power policies are not touched
+	fmt.Print("[3.6/8] Power settings (Fast Startup + PCIe link power saving) ... ")
 	pwrNotes := applyPowerSettings()
-	fmt.Println("完成")
+	fmt.Println("done")
 	for _, n := range pwrNotes {
 		fmt.Println("    - " + n)
 	}
 
-	// 4. 驱动安装
-	fmt.Println("[4/8] 准备 Gen2 BYOVD 驱动(ThrottleStop + WinRing0)...")
+	// 4. Driver install
+	fmt.Println("[4/8] Preparing Gen2 BYOVD drivers (ThrottleStop + WinRing0)...")
 	installDrivers()
 
-	// 4.5 Defender 精确排除(防杀软误删驱动文件导致 Gen2 自启失败)
-	//     只加我们自己的驱动/备份/发布目录, 不关任何系统防护。
-	fmt.Print("[4.5/8] Defender 排除(防误删) ... ")
+	// 4.5 Defender precise exclusions (prevents antivirus from deleting driver files and breaking Gen2 auto-start)
+	//     Only adds our own driver / backup / release directories; no system protections are disabled.
+	fmt.Print("[4.5/8] Defender exclusions (prevent deletion) ... ")
 	if err := hxcore.AddDefenderExclusions(); err != nil {
-		fmt.Println("未执行(可忽略):", err)
+		fmt.Println("not run (ignorable):", err)
 	} else {
-		fmt.Println("已加白 ThrottleStop/WinRing0 驱动文件与备份目录")
+		fmt.Println("Whitelisted ThrottleStop/WinRing0 driver files and backup directory")
 	}
 
-	// 5+6. EFI 部署与启动项 (v2.6.0: 抽取为 installEFI, GUI 按组件复用)
-	fmt.Println("[5/8]+[6/8] 部署解锁 EFI 与固件启动项(双路写入 + displayorder 置顶)...")
+	// 5+6. EFI deploy and boot entry (v2.6.0: extracted to installEFI, reused per-component by the GUI)
+	fmt.Println("[5/8]+[6/8] Deploy unlock EFI and firmware boot entry (dual-path write + displayorder promotion)...")
 	efiOK := installEFI()
 
-	// 7. Gen2 自启动(安装时不 retrain!)
-	// 重要: 安装过程中绝不执行 Gen2 PCIe 重训。此时 nvlddmkm 正占用 GPU,
-	// 强行 retrain 会让 GPU/链路进入异常状态, 导致下次开机 EFI 接力或
-	// nvlddmkm 初始化失败(实测: 设备报 code19 / Windows 启动异常进安全模式)。
-	// 正确时机 = 重启后登录时执行(与手动方案一致, 已验证稳定)。
-	// v2.6.0: 两路互斥串行设计 — Run 键登录瞬间先试 + SYSTEM 任务延迟30s确认;
-	// 单实例互斥体(gen2AcquireSingleInstance)保证二者不会同时进入驱动加载临界区。
-	// Run 键在普通权限下无法 sc start 驱动 → 自动交权给 SYSTEM 任务(静默)。
-	fmt.Println("[7/8] 注册 Gen2 登录自启动(SYSTEM 任务 + Run 键, 互斥串行)...")
+	// 7. Gen2 auto-start (do NOT retrain during install!)
+	// Important: never run the Gen2 PCIe retrain during install. At this point nvlddmkm still owns the GPU;
+	// forcing a retrain puts the GPU / link into an abnormal state, breaking the EFI takeover on next boot, or
+	// failing nvlddmkm initialization (observed: device reports code 19 / Windows boots abnormally into Safe Mode).
+	// Correct timing = after reboot, at logon (matches the manual recipe; verified stable).
+	// v2.6.0: two-path mutex-serial design - Run key tries at logon + SYSTEM task delays 30s to confirm;
+	// the single-instance mutex (gen2AcquireSingleInstance) keeps both paths from entering the driver-load critical section at once.
+	// The Run key, running with normal user permissions, cannot 'sc start' a driver -> automatically deferred to the SYSTEM task (silent).
+	fmt.Println("[7/8] Register Gen2 logon auto-start (SYSTEM task + Run key, mutex-serial)...")
 	setRunKey()
 	if err := setupGen2Task(); err != nil {
-		// v2.6.0: 任务是 Gen2 链的命脉, 注册失败必须让用户看见并可一键修复
+		// v2.6.0: the task is the lifeline of the Gen2 chain; a registration failure must be visible to the user with a one-click repair
 		fmt.Println("[!]", err)
-		msgbox("50HX 安装器 (Gen2 自启注册失败)",
-			"Gen2 登录自启任务注册失败 — 登录后不会自动解锁 Gen2。\n\n"+
-				"请稍后右键以管理员身份运行一次:\n"+
+		msgbox("50HX Installer (Gen2 auto-start registration failed)",
+			"Gen2 logon auto-start task registration failed - after logon Gen2 will not auto-unlock.\n\n"+
+				"Please right-click and run as administrator once:\n"+
 				"  50HXInstaller.exe -task\n\n"+
-				"其余安装步骤已完成。", mbIconWarn)
+				"The rest of the install steps are done.", mbIconWarn)
 	}
 
 	fmt.Println()
-	fmt.Println("安装完成!")
+	fmt.Println("Installation done!")
 	if efiOK {
-		fmt.Println("  下次重启: 固件将自动运行 50HX Unlock (Tensor 解锁) -> 自动进 Windows")
+		fmt.Println("  Next reboot: firmware will automatically run 50HX Unlock (Tensor unlock) -> automatically enter Windows")
 	} else {
-		fmt.Println("  [!] EFI 算力解锁本次未部署(见 [5/8] 说明) — 算力暂不会解锁,")
-		fmt.Println("      按 [5/8] 弹窗指引(mbr2gpt/手动部署)处理后重跑本安装器即可。")
+		fmt.Println("  [!] EFI compute unlock was not deployed this session (see [5/8] instructions) - compute will not unlock,")
+		fmt.Println("      follow the [5/8] popup guide (mbr2gpt / manual deploy) and re-run this installer afterwards.")
 	}
-	fmt.Println("  GSP 已启用: 驱动以 GSP-RM 模式接管 GPU, 解锁后不再黑屏/掉驱动")
-	fmt.Println("  登录后: Gen2 自动解锁 (已注册自启动, 无窗口静默)")
-	fmt.Println("  [!] 安装时不重训 PCIe, 重启后登录时才执行(避免与显卡驱动冲突)")
-	fmt.Println("  重启后验证: 双击 50HXCheck.exe 查看解锁状态(SS0=0x88888888 即成功)")
-	fmt.Println("  若 testsigning 刚开启: 请先重启一次使驱动可加载")
-	// v2.4: 完成弹框含关键 BIOS/重启指引(社区用户不依赖 README 也能操作)
-	// v2.6.0: EFI 成败给出不同指引; 告知电源设置已自动调整及恢复方式
+	fmt.Println("  GSP enabled: the driver takes over the GPU in GSP-RM mode, no more black screen / driver drop after unlock")
+	fmt.Println("  After logon: Gen2 auto-unlock (registered auto-start, no window, silent)")
+	fmt.Println("  [!] PCIe is not retrained during install; it runs after reboot at logon (to avoid GPU driver conflicts)")
+	fmt.Println("  After reboot verification: double-click 50HXCheck.exe to view the unlock status (SS0=0x88888888 means success)")
+	fmt.Println("  If test signing was just enabled: please reboot once first so the driver can load")
+	// v2.4: completion popup includes key BIOS / reboot guidance (community users can operate without depending on the README)
+	// v2.6.0: EFI success vs failure gets different guidance; tells user how power settings were adjusted and how to restore them
 	efiNote := ""
 	if efiOK {
-		efiNote = "重启时请注意:\n" +
-			"  · 若黑屏/显示 50HX 文字日志约 10~30 秒, 属正常(正在解锁)\n" +
-			"  · 解锁完成后会自动进入 Windows\n\n" +
-			"若重启后直接进了 Windows(没跑解锁), 请进 BIOS(Del/F2):\n" +
-			"  1. 关闭 Secure Boot(未签名 EFI 需要)\n" +
-			"  2. 关闭 Fast Boot\n" +
-			"  3. 把 '50HX Unlock' 设为第一启动项\n" +
-			"     (若列表只有 Windows Boot Manager, 关 CSM 后再看)\n"
+		efiNote = "Things to note at reboot:\n" +
+			"  - A black screen / '50HX' text log displayed for about 10-30 seconds is normal (unlock in progress)\n" +
+			"  - After the unlock completes, Windows will boot automatically\n\n" +
+			"If after reboot Windows boots directly without the unlock running, please enter the BIOS (Del/F2):\n" +
+			"  1. Disable Secure Boot (required for the unsigned EFI)\n" +
+			"  2. Disable Fast Boot\n" +
+			"  3. Set '50HX Unlock' as the first boot entry\n" +
+			"     (if the list only shows Windows Boot Manager, disable CSM first then re-check)\n"
 	} else {
-		efiNote = "[!] 本次 EFI 算力解锁未部署(原因见上方弹窗/日志):\n" +
-			"  · 算力暂不会解锁, 按指引处理后重跑安装器即可\n" +
-			"  · Gen2 自启已注册, 不受影响\n"
+		efiNote = "[!] This session the EFI compute unlock was not deployed (see popup / log above for the reason):\n" +
+			"  - Compute will not unlock; follow the guidance and re-run the installer afterwards\n" +
+			"  - Gen2 auto-start is registered and is unaffected\n"
 	}
-	msgbox("50HX 安装器 (安装完成)",
-		"✅ 安装完成! "+map[bool]string{true: "重启后将自动执行解锁。", false: "Gen2 部分已就绪。"}[efiOK]+"\n\n"+
+	msgbox("50HX Installer (Installation done)",
+		"OK Installation done! "+map[bool]string{true: "After reboot the unlock will run automatically.", false: "Gen2 is partially ready."}[efiOK]+"\n\n"+
 			efiNote +
-			"\n重启进系统后:\n"+
-			"  · 双击同目录的 50HXCheck.exe 验证 — 显示\n"+
-			"    '解锁成功: Tensor 满血(SS0=0x88888888)' 即完成\n"+
-			"  · 若提示未解锁, 它会给下一步(如开 Above 4G)\n\n"+
-			"· 测试签名若刚开启: 先重启一次驱动才可加载\n"+
-			"· GSP 已启用(EnableGpuFirmware=1): 解锁不黑屏的关键\n"+
-			"· 已自动关闭快速启动与 PCIe 链路省电(ASPM):\n"+
-			"  前者保证关机再开也走完整 UEFI 引导, 后者减少空闲降到 Gen1;\n"+
-			"  恢复方式见 README §2.4\n"+
-			"· 登录后 Gen2 自动解锁(静默)\n\n"+
-			"详细日志: "+filepath.Join(os.TempDir(), "50HX_installer.log"),
+			"\nAfter reboot and entering the system:\n"+
+			"  - Double-click 50HXCheck.exe in the same directory to verify - it displays\n"+
+			"    'unlock success: Tensor full (SS0=0x88888888)' when done\n"+
+			"  - If a hint says it is not unlocked, the tool will suggest the next step (e.g. enable Above 4G)\n\n"+
+			"- If test signing was just enabled: reboot once first so the driver can load\n"+
+			"- GSP enabled (EnableGpuFirmware=1): the key to no black screen after unlock\n"+
+			"- Fast Startup and PCIe link power saving (ASPM) are automatically disabled:\n"+
+			"  the former ensures shutdown-then-power-on also goes through a full UEFI boot; the latter reduces idle downshifts to Gen1;\n"+
+			"  See README section 2.4 for restore instructions\n"+
+			"- After logon Gen2 auto-unlock (silent)\n\n"+
+			"Detailed log: "+filepath.Join(os.TempDir(), "50HX_installer.log"),
 		mbIconInfo)
 }
 
@@ -913,81 +913,83 @@ func installDrivers() {
 		out, _ := hxcore.RunOut("sc.exe", "query", name)
 		return strings.Contains(out, "RUNNING")
 	}
-	// v2.5: 不再常驻 50hx_bridge(需测试签名)。Gen2 改 BYOVD:
-	//   ThrottleStop(任意物理内存写, EV 预签名) + WinRing0(PCI config) —
-	//   两者普通模式(testsigning off)即可加载。安装阶段仅放好驱动文件 +
-	//   注册 demand 服务; 真正的加载与自清理由登录后的 -gen2(SYSTEM 任务)
-	//   完成 → 用完即卸, 游戏时系统无第三方驱动。
+	// v2.5: no longer resident 50hx_bridge (requires test signing). Gen2 switched to BYOVD:
+	//   ThrottleStop (arbitrary physical memory writes, EV pre-signed) + WinRing0 (PCI config) -
+	//   both load in normal mode (testsigning off). The install stage only places the driver files and
+	//   registers a demand service; the actual load and self-clean are done by -gen2 at logon (SYSTEM task)
+	//   -> remove-when-done, leaving no third-party driver resident in the system while gaming.
 	tsApp := throttleStopAppRunning()
 	for _, d := range []struct{ name, file string }{
 		{"ThrottleStop", "ThrottleStop.sys"},
 		{"WinRing0_1_2_0", "WinRing0x64.sys"},
 	} {
 		dst := filepath.Join(sysDir, d.file)
-		// 本机装了 ThrottleStop 软件 → 复用其同名驱动, 绝不覆盖/删除(避免冲突+写保护)
+		// ThrottleStop software installed locally -> reuse its same-named driver; never overwrite / delete (to avoid conflicts and write-protection)
 		if tsApp {
-			fmt.Printf("  检测到 ThrottleStop 软件, 复用其 %s 驱动(不覆盖/不删)\n", d.name)
+			fmt.Printf("  Detected ThrottleStop software, reusing its %s driver (no overwrite / no delete)\n", d.name)
 			continue
 		}
 		if svcRunning(d.name) {
-			fmt.Printf("  %s 已在运行, 跳过覆盖(保持当前状态)\n", d.name)
+			fmt.Printf("  %s is running, skipping overwrite (keep current state)\n", d.name)
 			continue
 		}
 		hxcore.RunOut("sc.exe", "stop", d.name)
-		// 留一份到 %ProgramData%\50HXUnlock\drivers 作为持久备份源
-		// (40HXCheck 实测/Gen2 临时部署都从这里取; System32 的会被用完即卸删除)
+		// Keep a copy in %ProgramData%\50HXUnlock\drivers as the persistent backup source
+		// (used by 40HXCheck live testing and by Gen2 temporary deploys; the System32 copies are deleted remove-when-done)
 		pdDir := filepath.Join(os.Getenv("ProgramData"), "50HXUnlock", "drivers")
 		os.MkdirAll(pdDir, 0o755)
 		copyEmbedTo(filepath.Join(pdDir, d.file), d.file)
 		if err := copyEmbedTo(dst, d.file); err != nil {
 			if _, statErr := os.Stat(dst); statErr != nil {
-				fmt.Printf("  [!] 复制 %s 失败: %v\n", d.file, err)
+				fmt.Printf("  [!] Copy %s failed: %v\n", d.file, err)
 				continue
 			}
 		} else {
-			fmt.Printf("  已复制 %s\n", d.file)
+			fmt.Printf("  Copied %s\n", d.file)
 		}
 		ensureService(d.name, d.file)
 	}
-	fmt.Println("  Gen2 驱动文件已就绪(demand), 登录后由 SYSTEM 任务临时加载并自清理")
+	fmt.Println("  Gen2 driver files ready (demand); loaded at logon by the SYSTEM task and self-cleaned")
 }
 
-// ensureService: 仅注册(或更新)驱动服务, 不在此处加载。
-// 安装阶段加载 50hx_bridge(映射 GPU BAR0)会与正在运行的 nvlddmkm 争用硬件,
-// 实测导致 50HX 设备报 code19 / 后续启动异常。加载推迟到重启后登录时的 -gen2。
-// v2.4.6 关键修复(社区 #1/#2 根因):
+// ensureService: only registers (or updates) the driver service, does not load it here.
+// Loading 50hx_bridge during the install stage (which maps GPU BAR0) would contend with the running nvlddmkm
+// for the hardware; observed to cause the 50HX device to report code 19 / subsequent abnormal startup.
+// Loading is deferred to -gen2 at logon after reboot.
+// v2.4.6 key repair (root cause of community #1/#2):
 //
-//	驱动服务注册为 start=demand(手动), 需在登录后由 -gen2 拉起。
-//	而 -gen2 走 Run 键以普通用户权限运行 → sc start 需要管理员 →
-//	"[SC] StartService: OpenService 失败 5: 拒绝访问" → 驱动永远起不来
-//	→ Gen2 永远失败(用户现象: 算力解锁 OK 但 Gen2 ✗)。
-//	正解 = 保持 demand(不改成 auto! 详见下), 并把 -gen2 的执行权限升到
-//	SYSTEM: 注册 SYSTEM 计划任务(登录时触发 + 延迟 30s)跑 -gen2 -silent,
-//	既不需要 UAC 弹窗, 又保留"登录后才加载驱动"的安全时序。
+//	The driver service is registered as start=demand (manual); it must be started by -gen2 after logon.
+//	But -gen2 runs from the Run key with normal user permissions -> 'sc start' requires Administrator ->
+	//	"[SC] StartService: OpenService failed 5: Access is denied" -> the driver never starts
+//	-> Gen2 always fails (user-visible symptom: compute unlock OK but Gen2 fails).
+//	Correct answer = keep demand (do NOT change to auto! see below), and elevate -gen2's run permissions to
+//	SYSTEM: register a SYSTEM scheduled task (trigger at logon + delay 30s) that runs -gen2 -silent,
+//	which avoids a UAC popup and preserves the safe "load driver only after logon" timing.
 //
-// 为什么不改成 start=auto: type=kernel auto 驱动在开机早期由 SCM 加载,
-// 会与随后初始化的 nvlddmkm 争用 GPU BAR0 — 历史上实测导致 50HX 报
-// code19 / Windows 启动异常进安全模式。demand + 登录后加载是经过验证的时序。
+// Why not change start to auto: a type=kernel auto driver is loaded by SCM early in boot,
+// which would contend with the subsequently initialising nvlddmkm for GPU BAR0 - historically observed
+// to cause the 50HX to report code 19 / Windows to start abnormally into Safe Mode.
+// demand + load-after-logon is the verified timing.
 func ensureService(name string, sysFile string) {
 	bin := fmt.Sprintf("\\SystemRoot\\System32\\drivers\\%s", sysFile)
-	// 创建(已存在会失败, 忽略); 启动类型 demand — 由 SYSTEM 任务登录后拉起
+	// create (fails if it exists - ignore); start type demand - started by the SYSTEM task after logon
 	hxcore.RunOut("sc.exe", "create", name, "type=", "kernel", "start=", "demand", "binPath=", bin)
 	out, err := hxcore.RunOut("sc.exe", "query", name)
 	if err != nil || !strings.Contains(out, "STATE") {
-		fmt.Printf("  [!] 注册服务 %s 失败: %s\n", name, strings.TrimSpace(out))
+		fmt.Printf("  [!] register service %s failed: %s\n", name, strings.TrimSpace(out))
 		return
 	}
-	// 纠正被安全软件/策略改错的启动类型(Disabled 会导致 Gen2 永远拉不起)。
-	// 启动类型在 sc qc, 不在 query; 状态(STOPPED/RUNNING)在 query。
+	// Correct a start type that was changed by security software / policy (Disabled will prevent Gen2 from ever starting).
+	// The start type is in 'sc qc', not in 'query'; status (STOPPED/RUNNING) is in 'query'.
 	start := "demand"
 	if qc, qerr := hxcore.RunOut("sc.exe", "qc", name); qerr == nil {
 		qcu := strings.ToUpper(qc)
 		switch {
 		case strings.Contains(qcu, "DISABLED"):
 			hxcore.RunOut("sc.exe", "config", name, "start=", "demand")
-			start = "demand(原被改 DISABLED, 已修正)"
+			start = "demand (was changed to DISABLED, corrected)"
 		case strings.Contains(qcu, "AUTO_START"):
-			start = "auto(注意: 应为 demand)"
+			start = "auto (WARNING: should be demand)"
 		}
 	}
 	stateS := "?"
@@ -997,22 +999,22 @@ func ensureService(name string, sysFile string) {
 	case strings.Contains(out, "STOPPED"):
 		stateS = "STOPPED"
 	}
-	fmt.Printf("  服务 %s 已注册 (%s, %s), 登录后由 SYSTEM 任务加载\n", name, start, stateS)
+	fmt.Printf("  service %s registered (%s, %s); loaded by the SYSTEM task after logon\n", name, start, stateS)
 }
 
-// ensureSvcLoaded: 确保驱动服务已注册并加载。
-// v2.4.6: 由 SYSTEM 任务(或管理员手动)调用时 sc start 才有权限;
-// 普通权限(Run 键兜底)下失败属预期 — 静默交给 SYSTEM 任务处理。
+// ensureSvcLoaded: ensure the driver service is registered and loaded.
+// v2.4.6: 'sc start' only has permission when called by the SYSTEM task (or manually as administrator);
+// failure under normal user permissions (Run-key fallback) is expected - silently handed off to the SYSTEM task.
 
-// throttleStopAppRunning: 本机 ThrottleStop 软件进程检测(第三方占用驱动时跳过自清理)。
+// throttleStopAppRunning: detects whether the local ThrottleStop software's process is running (when a third party occupies the driver, self-clean is skipped).
 
 func throttleStopAppRunning() bool {
 	out, _ := hxcore.RunOut("tasklist.exe", "/FI", "IMAGENAME eq ThrottleStop.exe")
 	return strings.Contains(out, "ThrottleStop.exe")
 }
 
-// redeployDriverFile: v2.6.0 - 杀软可能删驱动文件, 每次 -gen2 前从 embed 重新释放到
-// System32\drivers(内容一致则跳过写入, 避免占用冲突)。返回 true = 驱动文件已就绪。
+// redeployDriverFile: v2.6.0 - antivirus may delete driver files; before each -gen2 re-extract from embed
+// to System32\drivers (skip the write if content matches, to avoid in-use conflicts). Returns true = driver file is ready.
 
 func redeployDriverFile(sysFile string) bool {
 	data, err := embedded.ReadFile("embed/" + sysFile)
@@ -1036,7 +1038,7 @@ func redeployDriverFile(sysFile string) bool {
 
 func ensureSvcLoaded(name string, sysFile string) {
 	if out, _ := hxcore.RunOut("sc.exe", "query", name); strings.Contains(out, "RUNNING") {
-		return // 已运行
+		return // running
 	}
 	if redeployDriverFile(sysFile) {
 		hxcore.AddDefenderExclusions()
@@ -1045,28 +1047,28 @@ func ensureSvcLoaded(name string, sysFile string) {
 	hxcore.RunOut("sc.exe", "create", name, "type=", "kernel", "start=", "demand", "binPath=", bin)
 	_, err := hxcore.RunOut("sc.exe", "start", name)
 	if err != nil {
-		// 首次启动失败 - 常见于杀软删除驱动文件或服务配置被改为 disabled。
-		// 删除服务 -> 重新部署 -> 用新建服务重试一次。
-		
+		// First start failed - common when antivirus deleted the driver file or the service config was changed to disabled.
+		// Delete service -> redeploy -> retry once with a freshly created service.
+
 		hxcore.RunOut("sc.exe", "delete", name)
 		redeployDriverFile(sysFile)
 		hxcore.RunOut("sc.exe", "create", name, "type=", "kernel", "start=", "demand", "binPath=", bin)
 		if out, err := hxcore.RunOut("sc.exe", "start", name); err != nil {
-			fmt.Printf("[Gen2] 启动服务 %s 失败: %s\n", name, strings.TrimSpace(out))
+			fmt.Printf("[Gen2] start service %s failed: %s\n", name, strings.TrimSpace(out))
 			if !isAdmin() {
-				fmt.Println("[Gen2] 当前非管理员 — 交给 SYSTEM 计划任务处理(无需操作)")
+				fmt.Println("[Gen2] current user is not administrator - handed off to the SYSTEM scheduled task (no user action needed)")
 			}
 		}
 	}
 }
 
 func setupBootEntry() error {
-	// 幂等: 已存在 "50HX Unlock" 项则跳过 (用全量 firmware 枚举, 描述在项详情)
+	// Idempotent: if a "50HX Unlock" entry already exists, skip (use the full firmware enum; the description is in each entry's detail)
 	if out, _ := hxcore.RunOut("bcdedit.exe", "/enum", "firmware"); strings.Contains(out, bootDesc) {
-		fmt.Println("    启动项已存在, 跳过")
+		fmt.Println("    boot entry already exists, skipped")
 		return nil
 	}
-	// 1. copy {bootmgr} 作模板
+	// 1. Copy {bootmgr} as a template
 	out, err := hxcore.RunOut("bcdedit.exe", "/copy", "{bootmgr}", "/d", bootDesc)
 	if err != nil {
 		return fmt.Errorf("bcdedit copy: %v", err)
@@ -1074,16 +1076,16 @@ func setupBootEntry() error {
 	re := regexp.MustCompile(`\{([0-9a-fA-F-]{36})\}`)
 	m := re.FindStringSubmatch(out)
 	if len(m) < 2 {
-		return errors.New("无法解析 bcdedit 输出: " + out)
+		return errors.New("could not parse bcdedit output: " + out)
 	}
 	guid := m[1]
 	cleanup := func() { hxcore.RunOut("bcdedit.exe", "/delete", "{"+guid+"}", "/f") }
 
-	// 2. 找 ESP 盘符 (mountvol 重挂)
+	// 2. Find the ESP drive letter (remount via mountvol)
 	esp := hxcore.MountESP()
 	if esp == "" {
 		cleanup()
-		return errors.New("无法挂载 ESP")
+		return errors.New("could not mount the ESP")
 	}
 	defer hxcore.UnmountESP(esp)
 
@@ -1102,14 +1104,14 @@ func setupBootEntry() error {
 		cleanup()
 		return err
 	}
-	fmt.Printf("    启动项 %s 已置顶\n", guid)
+	fmt.Printf("    boot entry %s promoted to first\n", guid)
 	return nil
 }
 
 func setRunKey() {
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Println("  [!] 无法获取 exe 路径:", err)
+		fmt.Println("  [!] Could not get exe path:", err)
 		return
 	}
 	abs, _ := filepath.Abs(exe)
@@ -1121,48 +1123,50 @@ func setRunKey() {
 			`Software\Microsoft\Windows\CurrentVersion\Run`, registry.SET_VALUE)
 	}
 	if err != nil {
-		fmt.Println("  [!] Run 键写入失败:", err)
+		fmt.Println("  [!] Run-key write failed:", err)
 		return
 	}
 	defer k.Close()
 	if err := k.SetStringValue("50HXGen2", val); err != nil {
-		fmt.Println("  [!] Run 键设置失败:", err)
+		fmt.Println("  [!] Run-key set failed:", err)
 		return
 	}
-	// 注意: 这只是 HKCU Run 键(辅助通道, 登录瞬间先试); SYSTEM 计划任务才是权威通道。
-	// 不要打印成"Gen2 已注册", 以免与下方 setupGen2Task 的成功提示混淆。
-	fmt.Println("  Gen2 Run 键已写入(HKCU, 登录瞬间先试; SYSTEM 任务为权威通道): " + abs)
+	// Note: this is only the HKCU Run key (auxiliary channel, tries at logon); the SYSTEM scheduled task is the authoritative channel.
+	// Do not print "Gen2 registered" so the success hint from setupGen2Task below is not confused.
+	fmt.Println("  Gen2 Run key written (HKCU, tries at logon; SYSTEM task is the authoritative channel): " + abs)
 }
 
-// setupGen2Task: v2.4.6 核心 — 注册 SYSTEM 计划任务, 登录时(延迟 30s)以
-// 最高权限静默执行 -gen2。
+// setupGen2Task: v2.4.6 core - register a SYSTEM scheduled task that, at logon (delayed 30s),
+// silently runs -gen2 with maximum permissions.
 //
-// 为什么需要它: 驱动服务是 demand 启动, 登录后需 sc start 拉起, 而 sc start
-// 需要管理员。Run 键以普通用户权限跑 → "OpenService 失败 5: 拒绝访问" →
-// 驱动永远起不来 → Gen2 永远失败(社区 #1/#2 的真实根因)。
-// 为什么不用 UAC 提权: 每次登录弹 UAC 体验差, 且 UAC 关闭时静默降权仍失败。
-// SYSTEM 任务 = 无声的管理员: 权限最高、无弹窗、时机仍在登录后(安全)。
-// 注意保持 demand: 若改 auto 会在开机早期加载驱动, 与 nvlddmkm 争用 BAR0
-// (历史实测 code19 / 启动异常), demand + 登录后加载才是验证过的时序。
+// Why it is needed: the driver service is demand-start; after logon it must be brought up via 'sc start',
+// and 'sc start' requires Administrator. The Run key runs with normal user permissions ->
+// "OpenService failed 5: Access is denied" -> the driver never starts -> Gen2 always fails
+// (the real root cause of community issues #1 and #2).
+// Why not use UAC elevation: a UAC popup at every logon is a poor UX, and silent-elevation-disabled
+// UAC would still fail with downgraded permissions.
+// SYSTEM task = silent administrator: highest permissions, no popup, timing still after logon (safe).
+// Keep demand: switching to auto would load the driver early in boot and contend with nvlddmkm for BAR0
+// (historically observed code 19 / abnormal startup); demand + load-after-logon is the verified timing.
 //
-// v2.6.0: 改为返回 error; 创建后用 hxcore.TaskInfo 二次校验任务真的存在
-// (此前 schtasks 返回成功即认为完成, 用户端"任务未注册"直到 Gen2 没跑才暴露),
-// 失败自动重试; 仍失败返回错误, 由调用方弹窗给修复命令(-task)。
+// v2.6.0: changed to return an error; after creation, double-check with hxcore.TaskInfo that the task really exists
+// (previously schtasks returning success was taken as done, so user-side "task not registered" was only exposed when Gen2 did not run);
+// failed -> automatic retry; still failed -> return an error, and the caller pops up the -task repair command.
 //
-// v2.6.0 修复(社区"非管理员安装却提示未注册、重启又自动解锁"误报根因):
-// schtasks /create 退出码 0 = 任务已提交给计划任务服务(真实成功)。
+// v2.6.0 fix (root cause of the false report "installed without admin yet it says not registered, and reboot does auto-unlock"):
+// schtasks /create exit code 0 means the task was submitted to the Task Scheduler service (real success).
 //
-// 权威判据必须且只能是"退出码 0", 不能依赖其 stdout 中的 "SUCCESS/成功" 串:
-//  · 中文 Windows 上 "成功" 由 schtasks 以系统 ANSI/GBK 代码页写出, 而 Go 把
-//    管道字节当 UTF-8, 字面量 "成功"(UTF-8) 与 GBK 字节不匹配 -> Contains 失败;
-//  · 部分环境 schtasks /create 的 stdout 甚至为空(成功信息走别处), 同样无串可匹配;
-//  · 此前依赖 "SUCCESS/成功" 串 -> 串缺失即误判, 实测在中文机上稳定复现"假失败"。
-// 退出码 0 = 任务已写入计划服务, 与语言/代码页无关, 是可靠判据。
-// (紧随其后的 /query 仍存在提交延迟竞态, 仅作可选信息, 不再作为成败判据。)
+// The authoritative verdict must be, and only be, "exit code 0". It cannot rely on the "SUCCESS/success" string in stdout:
+//  - On Chinese-Windows, "success" is emitted by schtasks using the system ANSI/GBK code page, but Go treats
+//    the pipe bytes as UTF-8; the literal "success" (UTF-8) does not match the GBK bytes -> Contains fails.
+//  - In some environments schtasks /create's stdout is even empty (success info goes elsewhere), so there is nothing to match.
+//  - The previous dependency on the "SUCCESS/success" string led to false negatives - reliably reproduced on Chinese machines as "false failure".
+// Exit code 0 means the task is written to the scheduler service; this is language / code-page-independent and is the reliable verdict.
+// (The follow-up /query still suffers from a submit-delay race and is used only as optional information, not as the pass/fail criterion.)
 func setupGen2Task() error {
 	exe, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("无法获取 exe 路径: %v", err)
+		return fmt.Errorf("could not get exe path: %v", err)
 	}
 	abs, _ := filepath.Abs(exe)
 	tn := gen2TaskName
@@ -1171,53 +1175,54 @@ func setupGen2Task() error {
 		out, cerr := hxcore.RunOut("schtasks.exe", "/create", "/tn", tn,
 			"/tr", fmt.Sprintf("\"%s\" -gen2 -silent -guard", abs),
 			"/sc", "onlogon", "/ru", "SYSTEM", "/delay", "0000:30", "/f")
-		// 权威判据 = 退出码 0。任务已写入计划服务(中文机上 SUCCESS/成功 串不可靠, 不依赖)。
-		// 仅在退出码非 0 时才视为真实失败; 退出码 0 一律视为成功, 不再二次查询(避免提交延迟竞态误报)。
+		// Authoritative verdict = exit code 0. The task is written to the scheduler service (the "SUCCESS/success" string is unreliable on Chinese machines - do not depend on it).
+		// Only a non-zero exit code counts as a real failure; exit code 0 is always treated as success, with no second query (avoids false reports from the submit-delay race).
 		if cerr == nil {
-			fmt.Println("  Gen2 任务已注册(SYSTEM, 登录延迟30s, 静默): " + abs)
+			fmt.Println("  Gen2 task registered (SYSTEM, logon delay 30s, silent): " + abs)
 			return nil
 		}
 		lastErr = strings.TrimSpace(out)
 		if attempt < 3 {
-			fmt.Printf("  [!] 任务注册失败(第%d次), 重试... (%s)\n", attempt, lastErr)
+			fmt.Printf("  [!] task register failed (attempt %d), retrying... (%s)\n", attempt, lastErr)
 			time.Sleep(800 * time.Millisecond)
 		}
 	}
-	return fmt.Errorf("Gen2 计划任务创建失败(已重试): %s\n      可手动: 以管理员运行 50HXInstaller.exe -task", lastErr)
+	return fmt.Errorf("Gen2 scheduled task creation failed (after retries): %s\n      Manual workaround: run '50HXInstaller.exe -task' as administrator", lastErr)
 }
 
-// ===================== Gen2 解锁 (原生, 无 python) =====================
+// ===================== Gen2 unlock (native, no python) =====================
 
 func gen2Main() {
-	// 幂等; -silent(登录自启动调用)时全程无窗口静默
-	// v2.5: BYOVD (ThrottleStop + WinRing0) — 免测试签名; 用完即卸(自清理)
+	// Idempotent; in -silent (called by logon auto-start) the entire run is window-less and silent
+	// v2.5: BYOVD (ThrottleStop + WinRing0) - no test signing required; remove-when-done (self-clean)
 
-	// v2.6.0: 单实例互斥 — 防止 SYSTEM 任务 / Run 键 / 手动 -gen2 并发触发时,
-	// 两进程同时 sc start 同一驱动、争抢 BAR0 导致链路/驱动状态错乱。
-	// 放在最前: 拿不到锁直接退出, 绝不进入驱动加载临界区。
+	// v2.6.0: single-instance mutex - prevents two processes (SYSTEM task / Run key / manual -gen2 triggered concurrently)
+	// from both doing 'sc start' on the same driver and contending for BAR0, which would corrupt link / driver state.
+	// Placed first: if the lock cannot be acquired, exit immediately; never enter the driver-load critical section.
 	owned, release := gen2AcquireSingleInstance()
 	if !owned {
-		fmt.Println("[Gen2] 另一 Gen2 实例正在运行, 跳过(单实例保护)")
-		hxcore.WriteGen2Status("⏭️ 跳过: 另一 Gen2 实例正在运行(单实例保护, 避免并发抢驱动)")
+		fmt.Println("[Gen2] Another Gen2 instance is running, skipped (single-instance protection)")
+		hxcore.WriteGen2Status("Skipped: another Gen2 instance is running (single-instance protection, to avoid concurrent driver contention)")
 		return
 	}
 	defer release()
 
-	// v2.6.0: 时序保护 — 等 nvlddmkm 进入 RUNNING 后再动 GPU。抢在 nv 驱动初始化前
-	// retrain 会被 nv 起来后重置 PCIe 链路 / 覆盖 GPU 寄存器, 既冲掉 Gen2, 又可能触发
-	// code19(安装器注释 §785 已实证 "nvlddmkm 正占用 GPU 时 retrain 导致异常")。
-	// 普通机器 nv 登录后几秒即 RUNNING → 此处几乎不等待; 慢速/多卡机器则等到就绪,
-	// 避免与 nv 初始化重叠(固定 30s 延迟的脆弱性由此消除)。
+	// v2.6.0: timing protection - wait until nvlddmkm enters RUNNING before touching the GPU.
+	// Retraining before the NV driver initialises will cause the driver (once up) to reset the PCIe link /
+	// overwrite GPU registers, which both wipes out Gen2 and can trigger code 19 (Installer comment around
+	// line 785 documented "retraining while nvlddmkm still owns the GPU leads to abnormal state").
+	// On normal machines nvlddmkm reaches RUNNING within a few seconds of logon -> almost no wait here;
+	// on slow / multi-GPU machines it waits until ready, eliminating the brittleness of a fixed 30s delay.
 	waitForNvDriver(60 * time.Second)
 
 	ensureGspSilent()
-	defer cleanupByovd() // 注册最早→最后执行(在句柄 Close 后), 失败也清理
+	defer cleanupByovd() // registered first -> runs last (after handle Close); also runs on failure
 
-	// 驱动文件可能被上次"用完即卸"删除, 每次从 embed 重新放好
+	// The driver files may have been deleted by the previous remove-when-done; re-extract from embed each time
 	sysDir := os.Getenv("SystemRoot") + "\\System32\\drivers"
 	for _, df := range []string{"ThrottleStop.sys", "WinRing0x64.sys"} {
 		if _, err := os.Stat(filepath.Join(sysDir, df)); err != nil {
-			copyEmbedTo(filepath.Join(sysDir, df), df) // 占用中忽略错误
+			copyEmbedTo(filepath.Join(sysDir, df), df) // ignore errors when the file is in use
 		}
 	}
 	ensureSvcLoaded("ThrottleStop", "ThrottleStop.sys")
@@ -1226,35 +1231,35 @@ func gen2Main() {
 	th, err := hxcore.OpenThrottleStop()
 	if err != nil {
 		if !isAdmin() {
-			fmt.Println("[Gen2] ThrottleStop 未加载且当前非管理员 — 交给 SYSTEM 任务处理, 静默退出")
-			gen2StatusFail("ThrottleStop 驱动未加载(由 SYSTEM 任务负责拉起)")
+			fmt.Println("[Gen2] ThrottleStop is not loaded and the current user is not administrator - handed off to the SYSTEM task, silent exit")
+			gen2StatusFail("ThrottleStop driver not loaded (SYSTEM task is responsible for starting it)")
 			return
 		}
-		fmt.Println("[Gen2] ThrottleStop 驱动未运行。请重跑安装器(管理员)后重启。")
-		gen2StatusFail("ThrottleStop 驱动未运行 (需管理员重跑安装器)")
-		gen2Notify("ThrottleStop 驱动未运行。\n可能原因: ①杀软隔离了 ThrottleStop.sys(本工具已加 Defender 排除, 第三方杀软请在安全中心放行); ②本机 ThrottleStop 软件占用/冲突(关闭 ThrottleStop 后重试, 本工具会自动复用)。\n请右键安装程序 -> 以管理员身份运行, 再重启。")
+		fmt.Println("[Gen2] ThrottleStop driver is not running. Please re-run the installer (as administrator) and reboot.")
+		gen2StatusFail("ThrottleStop driver not running (requires administrator to re-run the installer)")
+		gen2Notify("ThrottleStop driver not running.\nPossible causes: 1) antivirus quarantined ThrottleStop.sys (this tool adds Defender exclusions; for third-party antivirus please allow it in the Security Center); 2) a local ThrottleStop installation is occupying or conflicting with the driver (disable ThrottleStop and retry; this tool will reuse it automatically).\nPlease right-click the installer -> Run as administrator, then reboot.")
 		return
 	}
-	// th/wh 句柄可能在 -hard 回退(Stage2)中被重开, 统一在下方 wh 处闭包按最终值关闭
+	// The th/wh handles may be reopened during the -hard fallback (Stage2); the deferred close below uses the final values.
 
 	wh, err := hxcore.OpenDevice(`\\.\WinRing0_1_2_0`)
 	if err != nil {
 		if !isAdmin() {
-			fmt.Println("[Gen2] WinRing0 未加载且当前非管理员 — 交给 SYSTEM 任务处理, 静默退出")
-			gen2StatusFail("WinRing0 驱动未加载, 且当前为普通权限(由 SYSTEM 任务负责拉起)")
+			fmt.Println("[Gen2] WinRing0 is not loaded and the current user is not administrator - handed off to the SYSTEM task, silent exit")
+			gen2StatusFail("WinRing0 driver not loaded, and the current user has normal permissions (SYSTEM task is responsible for starting it)")
 			return
 		}
-		fmt.Println("[Gen2] WinRing0 驱动未运行。")
-		gen2StatusFail("WinRing0 驱动未运行 (需管理员重跑安装器)")
-		gen2Notify("WinRing0 驱动未运行。\n可能原因: ①杀软隔离了 WinRing0x64.sys(本工具已加 Defender 排除, 第三方杀软请在安全中心放行); ②本机 ThrottleStop 软件占用/冲突(关闭 ThrottleStop 后重试, 本工具会自动复用)。\n请右键安装程序 -> 以管理员身份运行, 再重启。")
+		fmt.Println("[Gen2] WinRing0 driver is not running.")
+		gen2StatusFail("WinRing0 driver not running (requires administrator to re-run the installer)")
+		gen2Notify("WinRing0 driver not running.\nPossible causes: 1) antivirus quarantined WinRing0x64.sys (this tool adds Defender exclusions; for third-party antivirus please allow it in the Security Center); 2) a local ThrottleStop installation is occupying or conflicting with the driver (disable ThrottleStop and retry; this tool will reuse it automatically).\nPlease right-click the installer -> Run as administrator, then reboot.")
 		return
 	}
-	// 闭包按最终值关闭 th/wh(支持 -hard 回退中重开驱动句柄)
+	// Deferred close uses the final values of th/wh (supports reopening handles during the -hard fallback)
 	defer func() { hxcore.CloseHandle(th); hxcore.CloseHandle(wh) }()
 
-	// 定位 50HX (VEN_10DE&DEV_1E09), 不硬编码 BDF
-	// v2.6.0: 慢速 GPU 初始化(开机 50HX 未就绪)会偶发定位失败 → 重试最多 3 次,
-	// 避免"假失败"导致本次开机不解锁(30s 后的 SYSTEM 任务会再确认一次)。
+	// Locate the 50HX (VEN_10DE&DEV_1E09); do not hard-code the BDF.
+	// v2.6.0: slow GPU initialisation (the 50HX not yet ready at boot) can occasionally cause location failure ->
+	// retry up to 3 times, to avoid "false failure" causing this boot session to not unlock (the SYSTEM task at +30s will confirm again).
 	var gpuBDF uint32
 	gpuFound := false
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -1263,40 +1268,40 @@ func gen2Main() {
 			break
 		}
 		if attempt < 3 {
-			fmt.Printf("[Gen2] 暂未定位到 40HX, 2s 后重试 (%d/3)...\n", attempt)
+			fmt.Printf("[Gen2] 50HX not yet located, retrying in 2s (%d/3)...\n", attempt)
 			time.Sleep(2 * time.Second)
 		}
 	}
 	if !gpuFound {
-		fmt.Println("[Gen2] 未能定位 50HX (VEN_10DE&DEV_1E09)。请发日志。")
-		gen2StatusFail("未能在 PCI 总线上定位 50HX (VEN_10DE&DEV_1E09)")
-		gen2Notify("未能在 PCI 总线上找到 40HX。\n请确认显卡已插好且驱动已装。")
+		fmt.Println("[Gen2] Could not locate 50HX (VEN_10DE&DEV_1E09). Please send the log.")
+		gen2StatusFail("Could not locate 50HX (VEN_10DE&DEV_1E09) on the PCI bus")
+		gen2Notify("Could not find 50HX on the PCI bus.\nPlease confirm the GPU is seated and the driver is installed.")
 		return
 	}
 	gpuBus := (gpuBDF >> 8) & 0xFF
-	fmt.Printf("[Gen2] 50HX 位于 %02x:%02x.%x\n", gpuBus, (gpuBDF>>3)&0x1F, gpuBDF&7)
+	fmt.Printf("[Gen2] 50HX is at %02x:%02x.%x\n", gpuBus, (gpuBDF>>3)&0x1F, gpuBDF&7)
 	cur := hxcore.LinkSpeed(wh, gpuBDF)
-	fmt.Printf("[Gen2] 当前链路: Gen%d\n", cur)
-	// v2.6.0: 记录原始 PCIe 寄存器(LNKCAP/LNKCTL/LNKCTL2) — 社区反馈 -hard 调试用
+	fmt.Printf("[Gen2] current link: Gen%d\n", cur)
+	// v2.6.0: record the raw PCIe registers (LNKCAP/LNKCTL/LNKCTL2) - community feedback for -hard debugging
 	if cap := hxcore.PcieCap(wh, gpuBDF); cap != 0 {
 		rd := func(off uint32) uint32 {
 			v, _ := hxcore.PciRd(wh, gpuBDF, off)
 			return v
 		}
-		fmt.Printf("[Gen2] LNKCAP=0x%08X LNKCTL=0x%08X LNKCTL2=0x%08X (目标Gen%d)\n",
+		fmt.Printf("[Gen2] LNKCAP=0x%08X LNKCTL=0x%08X LNKCTL2=0x%08X (target Gen%d)\n",
 			rd(cap+0x0C), rd(cap+0x10), rd(cap+0x30), rd(cap+0x30)&0xF)
 	}
 	if cur >= 2 {
-		fmt.Println("[Gen2] 已是 Gen2, 无需操作。")
-		hxcore.WriteGen2Status(fmt.Sprintf("✅ Gen2 无需操作: 当前链路已是 Gen%d\n运行身份: %s\n50HX 位置: %02x:%02x.%x\n",
-			cur, map[bool]string{true: "管理员/SYSTEM", false: "普通用户(受限)"}[isAdmin()],
+		fmt.Println("[Gen2] Already at Gen2, no action required.")
+		hxcore.WriteGen2Status(fmt.Sprintf("OK Gen2, no action required: current link is Gen%d\nrun identity: %s\n50HX location: %02x:%02x.%x\n",
+			cur, map[bool]string{true: "administrator/SYSTEM", false: "normal user (limited)"}[isAdmin()],
 			gpuBus, (gpuBDF>>3)&0x1F, gpuBDF&7))
-		gen2Notify("PCIe 已是 Gen" + fmt.Sprint(cur) + ", 无需操作。")
+		gen2Notify("PCIe is Gen" + fmt.Sprint(cur) + ", no action required.")
 		return
 	}
 
-	// 1. PL0 writes (BAR0) — 经 ThrottleStop 物理内存写
-	fmt.Println("[Gen2] 写 XVE/链路寄存器 (ThrottleStop)...")
+	// 1. PL0 writes (BAR0) - via ThrottleStop physical-memory writes
+	fmt.Println("[Gen2] Writing XVE / link registers (ThrottleStop)...")
 	pl0 := []struct {
 		off  uint64
 		val  uint32
@@ -1313,27 +1318,27 @@ func gen2Main() {
 	}
 	bar0Phys := uint64(bar0raw & 0xFFFFFFF0)
 	fmt.Printf("[Gen2] BAR0 = 0x%08X\n", bar0Phys)
-	// v2.6.0: BAR0 合法性校验 — 写 PL0 前确认 BAR0 真指向 50HX MMIO, 避免把 4 个
-	// 链路寄存器写到错误物理地址(多卡/寨板 BAR 重映射、BAR0 读回异常场景)。
-	// NV_PMC BOOT_0 @ BAR0+0x0: TU106 家族字节 = 0x16 (unlock40x_v70.c:2555 记 40HX=0x166000A1)。
-	// 家族不匹配或读回 0xFFFFFFFF → 中止 PL0 写入(宁可本次不开锁, 不污染他设备 MMIO)。
+	// v2.6.0: BAR0 validity check - before writing PL0, confirm that BAR0 truly points at the 50HX MMIO so the 4
+	// link registers are not written to the wrong physical address (multi-GPU / cheap-board BAR remap, BAR0 read-back abnormal scenarios).
+	// NV_PMC BOOT_0 @ BAR0+0x0: TU106 family byte = 0x16 (unlock40x_v70.c:2555 records 40HX=0x166000A1).
+	// Family mismatch or read-back 0xFFFFFFFF -> abort PL0 write (prefer to not unlock this session rather than pollute another device's MMIO).
 	boot0, berr := hxcore.TSRead(th, bar0Phys+0x0)
 	if berr != nil || (boot0&0xFF000000) != 0x16000000 {
-		fmt.Printf("[Gen2][!] BAR0 合法性校验失败: BOOT_0=0x%08X (期望 TU10x 家族 0x16xxxxxx), 中止 PL0 写入\n", boot0)
-		gen2StatusFail(fmt.Sprintf("BAR0 校验失败(BOOT_0=0x%08X), 安全中止 PL0 写入; 请发日志", boot0))
+		fmt.Printf("[Gen2][!] BAR0 validity check failed: BOOT_0=0x%08X (expected TU10x family 0x16xxxxxx); aborted PL0 write\n", boot0)
+		gen2StatusFail(fmt.Sprintf("BAR0 check failed (BOOT_0=0x%08X), safely aborted PL0 write; please send the log", boot0))
 		if !hasArg("-silent") {
-			gen2Notify("BAR0 校验失败, Gen2 安全中止。\n请发日志。")
+			gen2Notify("BAR0 check failed; Gen2 safely aborted.\nPlease send the log.")
 		}
 		return
 	}
-	fmt.Printf("[Gen2] BAR0 校验通过 (BOOT_0=0x%08X, TU106)\n", boot0)
+	fmt.Printf("[Gen2] BAR0 check passed (BOOT_0=0x%08X, TU106)\n", boot0)
 	for _, p := range pl0 {
 		if werr := hxcore.TSWrite(th, bar0Phys+p.off, p.val); werr != nil {
-			fmt.Printf("  [!] %s 写失败: %v\n", p.name, werr)
+			fmt.Printf("  [!] %s write failed: %v\n", p.name, werr)
 			continue
 		}
 		if rb, rerr := hxcore.TSRead(th, bar0Phys+p.off); rerr != nil || rb != p.val {
-			fmt.Printf("  [warn] %s 读回 0x%08x (期望 0x%08x)\n", p.name, rb, p.val)
+			fmt.Printf("  [warn] %s read-back 0x%08x (expected 0x%08x)\n", p.name, rb, p.val)
 		} else {
 			fmt.Printf("  %s OK (0x%08X)\n", p.name, rb)
 		}
@@ -1342,7 +1347,7 @@ func gen2Main() {
 	// 2. LNKCTL2 TLS=2 (GPU + root)
 	root := hxcore.FindRootPort(wh, gpuBus)
 	if root == 0xFFFFFFFF {
-		fmt.Println("[Gen2] 未找到 root port, 用 GPU retrain fallback")
+		fmt.Println("[Gen2] root port not found, using GPU retrain fallback")
 	}
 	fmt.Printf("[Gen2] root port = 00:%02x.%x\n", (root>>3)&0x1F, root&7)
 	for _, b := range []struct {
@@ -1356,16 +1361,16 @@ func gen2Main() {
 		if cap == 0 {
 			continue
 		}
-		// v2.6.0: 读改写 — 只改 TLS(bit3:0), 保留其余位(对齐 python 版)。
-		// 此前直接写 {2,0} 清掉高 12 位, 个别 VBIOS 依赖这些位时链路异常。
+		// v2.6.0: read-modify-write - only change TLS (bits 3:0), preserve the rest (matches the python version).
+		// Previously the direct write of {2,0} cleared the upper 12 bits; some VBIOS depend on them, causing link abnormalities.
 		curRaw, _ := hxcore.PciRd(wh, b.bdf, cap+0x30)
 		nv := uint16(curRaw&0xFFF0) | 2
 		hxcore.PciWr(wh, b.bdf, cap+0x30, []byte{byte(nv), byte(nv >> 8)})
 		rb, _ := hxcore.PciRd(wh, b.bdf, cap+0x30)
-		fmt.Printf("  %s LNKCTL2 TLS=2 (0x%04X -> 0x%04X, 回读 TLS=%d)\n", b.tag, curRaw&0xFFFF, rb&0xFFFF, rb&0xF)
+		fmt.Printf("  %s LNKCTL2 TLS=2 (0x%04X -> 0x%04X, read-back TLS=%d)\n", b.tag, curRaw&0xFFFF, rb&0xFFFF, rb&0xF)
 	}
 
-	// 3. UPGRADE retrain: 清位→置位脉冲 (只置位在 50HX 上不生效)
+	// 3. UPGRADE retrain: clear bit -> set bit pulse (setting the bit alone does not work on the 50HX)
 	retrain := func(bdf uint32) {
 		cap := hxcore.PcieCap(wh, bdf)
 		if cap == 0 {
@@ -1383,15 +1388,15 @@ func gen2Main() {
 		buf2[0] |= 0x20 // set bit5
 		hxcore.PciWr(wh, bdf, cap+0x10, buf2)
 	}
-	// v2.6.0: 单次 root 重训 → 最多 6 轮 root/GPU 交替(对齐 python 版, 比初版 4 轮更稳)。
-	// 寨板/双卡下根端口一次脉冲常训不上(issue #8 "需反复禁用/启用"),
-	// 交替多轮显著提高成功率; 达成 Gen2 即提前退出(上限约 13s, 登录后 30s 才跑)。
+	// v2.6.0: single root retrain -> up to 6 alternating root/GPU rounds (matches the python version, more stable than the original 4 rounds).
+	// On cheap boards / dual-GPU systems, a single root pulse often fails to retrain (issue #8 "needs repeated disable/enable"),
+	// alternating rounds significantly improve success; once Gen2 is achieved, exit early (capped at ~13s, runs only after a 30s post-logon delay).
 	for attempt := 0; attempt < 6; attempt++ {
 		bdf, tag := gpuBDF, "GPU"
 		if attempt%2 == 0 && root != 0xFFFFFFFF {
 			bdf, tag = root, "ROOT"
 		}
-		fmt.Printf("[Gen2] 链路重训 #%d (%s端)...\n", attempt+1, tag)
+		fmt.Printf("[Gen2] Link retrain #%d (%s end)...\n", attempt+1, tag)
 		retrain(bdf)
 		time.Sleep(2200 * time.Millisecond)
 		cur = hxcore.LinkSpeed(wh, gpuBDF)
@@ -1400,33 +1405,33 @@ func gen2Main() {
 		}
 	}
 
-	// v2.6.0: 判据修正 — 驱动/ASPM 会在空闲时把链路降到 Gen1 省电, 只看当前
-	// 速率会把成功误报成失败(社区"Gen1"误报来源之一, v2.4.5 时代已实证:
-	// "待机省电时为 Gen1, 负载下自动跑满 Gen2")。以 GPU LNKCTL2 的
-	// TLS(目标速率)区分: TLS>=2 且当前 Gen1 = 配置成功, 空闲降速属正常。
+	// v2.6.0: verdict correction - drivers/ASPM will downshift the link to Gen1 when idle; only looking at the current
+	// speed would misreport success as failure (one source of the community's "Gen1" misreports, confirmed in the v2.4.5 era:
+	// "idle power saving shows Gen1; under load the link automatically runs at full Gen2"). Distinguish via the GPU's LNKCTL2
+	// TLS (target speed): TLS>=2 and current Gen1 = config success; idle downshift is normal.
 	tls := uint32(0)
 	if gcap := hxcore.PcieCap(wh, gpuBDF); gcap != 0 {
 		if v, rerr := hxcore.PciRd(wh, gpuBDF, gcap+0x30); rerr == nil {
 			tls = v & 0xF
 		}
 	}
-	// v2.5.2: Stage2 自动化(社区 #11/#20/#8 + 贴吧多平台复现的实证解法) —
-	// 寨板/多卡/X99 平台 retrain-only 开机训不上, 需要 Root Link Disable(+
-	// PnP 恢复)才能上 Gen2, 且每次开机都得重来一次(#20 实证); 手动 -hard
-	// 用户根本不会做, 贴吧/B站大量"每开机手动禁用启用显卡"的变通皆源于此。
-	// 现在登录任务在 Stage1 未达成(cur<2)时自动执行一次 Stage2(静默, 上限约1分钟):
-	//   · 无论 TLS: TLS 已配而链路仍 Gen1 → LD 会立即训上并消除"空闲降速"歧义;
-	//     TLS 没配上 → LD 后重写常能粘住(贴吧 .06 批次用户 LD 后同样成功,
-	//     说明"写保护批次"与"retrain-only 不够"此前被混为一谈)。
-	//   · 退出开关: reg add HKLM\SOFTWARE\50HXUnlock /v Gen2AutoHard /t REG_DWORD /d 0 /f
-	//     (50HX 是唯一显示卡的机器若不想要登录后数秒黑屏, 可关)
-	//   · 手动 -hard 保留: cur<2 即强制走该路径(不再要求 tls>=2)。
-	// Link Disable 期间 nvidia-smi 短暂报 "GPU is lost", 结束后自动 PnP 恢复。
+	// v2.5.2: Stage2 automation (community #11/#20/#8 plus empirically demonstrated solutions on multiple platforms on the forum) -
+	// on cheap boards / multi-GPU / X99 platforms, retrain-only cannot train up at boot; a Root Link Disable (+ PnP restore)
+	// is required to reach Gen2, and must be repeated each boot (#20 confirmed); manual -hard users will never do it,
+	// and the widespread "disable/re-enable the GPU manually each boot" workarounds on the forum all stem from this.
+	// Now the logon task automatically runs Stage2 once when Stage1 does not achieve Gen2 (cur<2) (silent, capped at ~1 minute):
+	//   - Regardless of TLS: if TLS is configured but the link is still Gen1 -> LD will immediately train up and remove the "idle downshift" ambiguity;
+	//     if TLS is not set -> rewriting after LD often sticks (the .06 batch forum users also succeed after LD;
+	//     instructions for "write-protected batches" and "retrain-only is not enough" were previously conflated).
+	//   - Opt-out: reg add HKLM\SOFTWARE\50HXUnlock /v Gen2AutoHard /t REG_DWORD /d 0 /f
+	//     (machines where 50HX is the only display card and a few seconds of black screen after logon is not desired can disable it)
+	//   - Manual -hard kept: cur<2 forces this path (no longer requires tls>=2).
+	// During Link Disable nvidia-smi briefly reports "GPU is lost"; automatic PnP restore runs afterwards.
 	if cur < 2 && (hasArg("-hard") || gen2AutoHardEnabled()) {
 		if hasArg("-hard") {
-			fmt.Println("[Gen2] retrain 未成 → -hard 显式触发 Link Disable 回退")
+			fmt.Println("[Gen2] retrain did not succeed -> -hard explicitly triggers Link Disable fallback")
 		} else {
-			fmt.Println("[Gen2] retrain 未成 → 自动执行 Link Disable 回退 (Gen2AutoHard 默认开; 关闭方法见 README §2.5)")
+			fmt.Println("[Gen2] retrain did not succeed -> automatically running Link Disable fallback (Gen2AutoHard is enabled by default; see README section 2.5 to disable)")
 		}
 		gen2HardFallback(&th, &wh, gpuBDF, bar0Phys, root)
 		return
@@ -1437,75 +1442,75 @@ func gen2Main() {
 	case cur >= 2:
 		unlocked = true
 		fmt.Printf("[Gen2] *** GEN2 ACHIEVED (Gen%d) ***\n", cur)
-		gen2Verdict = fmt.Sprintf("✅ Gen2 成功: 当前链路 Gen%d", cur)
+		gen2Verdict = fmt.Sprintf("OK Gen2 success: current link Gen%d", cur)
 	case tls >= 2:
 		unlocked = true
-		fmt.Printf("[Gen2] TLS=Gen%d 但当前 Gen%d — 空闲省电降速(负载下自动回 Gen2)\n", tls, cur)
-		gen2Verdict = fmt.Sprintf("🟢 Gen2 已配置(TLS=Gen%d): 当前 Gen%d 为空闲省电降速, 负载下自动回 Gen2", tls, cur)
+		fmt.Printf("[Gen2] TLS=Gen%d but current Gen%d - idle power saving downshift (under load the link automatically returns to Gen2)\n", tls, cur)
+		gen2Verdict = fmt.Sprintf("OK Gen2 configured (TLS=Gen%d): current Gen%d is idle power saving downshift; under load it automatically returns to Gen2", tls, cur)
 	default:
-		fmt.Printf("[Gen2] 仍在 Gen%d (TLS=Gen%d), 解锁失败。请发日志。\n", cur, tls)
-		gen2Verdict = fmt.Sprintf("❌ Gen2 失败: 仍在 Gen%d (TLS=Gen%d; PL0 全 OK 而 TLS 未粘住, 多为驱动/GSP 持有链路策略 — 登录任务(已注册)会自动执行 Stage2 回退; 任务未注册则不会自动跑, 先注册再重试; 详见 README §5.2)", cur, tls)
+		fmt.Printf("[Gen2] still at Gen%d (TLS=Gen%d), unlock failed. Please send the log.\n", cur, tls)
+		gen2Verdict = fmt.Sprintf("FAIL Gen2: still at Gen%d (TLS=Gen%d; all PL0 writes OK but TLS not sticking, usually because the driver/GSP is holding the link policy - the registered logon task will automatically run the Stage2 fallback; if the task is not registered it will not auto-run, register it then retry; see README section 5.2)", cur, tls)
 	}
-	// v2.6.0: 成功清掉遗留重试任务; 失败按策略安排自动重试(次数/间隔见 hxcore config)。
-	// v3.0.1: 常驻守护模式不排一次性重试任务 — 守护进程每分钟自行重试。
+	// v2.6.0: on success clear any leftover retry task; on failure schedule an automatic retry per policy (see hxcore config for count / interval).
+	// v3.0.1: resident-guardian mode does not preclude the one-shot retry task - the guardian process retries every minute.
 	if unlocked {
 		deleteGen2Retry()
 	} else if hxcore.DriverStrategy() != hxcore.DriverStrategyResident {
 		scheduleGen2Retry(retryDepth())
 	}
-	st := fmt.Sprintf("结论: %s\n运行身份: %s\n50HX 位置: %02x:%02x.%x\nRoot Port: %02x:%02x.%x\n"+
-		"链路: 当前 Gen%d / 目标 TLS=Gen%d\n驱动: ThrottleStop=✓ WinRing0=✓ (BYOVD, 用完即卸)\n",
+	st := fmt.Sprintf("Verdict: %s\nrun identity: %s\n50HX location: %02x:%02x.%x\nRoot Port: %02x:%02x.%x\n"+
+		"Link: current Gen%d / target TLS=Gen%d\ndrivers: ThrottleStop=OK WinRing0=OK (BYOVD, remove-when-done)\n",
 		gen2Verdict,
-		map[bool]string{true: "管理员/SYSTEM", false: "普通用户(受限)"}[isAdmin()],
+		map[bool]string{true: "administrator/SYSTEM", false: "normal user (limited)"}[isAdmin()],
 		gpuBus, (gpuBDF>>3)&0x1F, gpuBDF&7,
 		(root>>8)&0xFF, (root>>3)&0x1F, root&7,
 		cur, tls)
 	if wErr := hxcore.WriteGen2Status(st); wErr != nil {
-		fmt.Printf("[Gen2] 状态文件写入失败(不影响解锁): %v\n", wErr)
+		fmt.Printf("[Gen2] status file write failed (does not affect unlock): %v\n", wErr)
 	}
 	if !hasArg("-silent") && !hasArg("-y") {
 		icon := uint(mbIconInfo)
-		txt := fmt.Sprintf("PCIe 链路: 当前 Gen%d (目标 TLS=Gen%d)\n", cur, tls)
+		txt := fmt.Sprintf("PCIe link: current Gen%d (target TLS=Gen%d)\n", cur, tls)
 		if unlocked {
-			txt += "=== GEN2 解锁成功 ==="
+			txt += "=== GEN2 UNLOCK SUCCESS ==="
 			if cur < 2 {
-				txt += "\n(当前为空闲省电降速, 负载下自动回 Gen2)"
+				txt += "\n(current is idle power saving downshift; under load the link automatically returns to Gen2)"
 			}
 		} else {
-			txt += "仍在 Gen1, 解锁失败(详见日志)。"
+			txt += "still at Gen1, unlock failed (see log)."
 			icon = mbIconError
 		}
 		msgbox("50HX Gen2", txt, icon)
 	}
 }
 
-// ---------- v3.0.1: 常驻守护 (驱动策略=常驻时, 由登录任务 -guard 启动) ----------
-// 每 1 分钟读 GPU 目标速率 TLS: TLS>=2 就不动(空闲降 Gen1 属正常省电);
-// TLS 掉回 <2 = 解锁配置丢失(如显卡复位/驱动重载) → 自动重跑一次完整解锁。
-// 进程随登录任务常驻; 注销/任务结束/卸载即停止。守护重试不排一次性重试任务。
+// ---------- v3.0.1: resident guardian (started by the logon task with -guard when the driver policy is resident) ----------
+// Every 1 minute, read the GPU target speed TLS: if TLS>=2 leave it alone (idle downshift to Gen1 is normal power saving);
+// if TLS falls back below <2 the unlock configuration was lost (e.g. GPU reset / driver reloaded) -> automatically re-run a full unlock.
+// The process stays resident with the logon task; logoff / task end / uninstall stops it. The guardian retry does not preclude the one-shot retry task.
 const gen2GuardInterval = 1 * time.Minute
 
 func residentGuard() {
-	fmt.Println("[守护] 常驻守护启动: 每 1 分钟检查 Gen2 目标(TLS), 配置丢失(TLS<2)自动重训; 注销或任务结束即停止。")
+	fmt.Println("[guardian] resident guardian started: every 1 minute checks the Gen2 target (TLS); if the configuration is lost (TLS<2) it automatically retrains; stops on logoff or task end.")
 	for {
 		time.Sleep(gen2GuardInterval)
 		st := hxcore.ReadUnlockStateV2(0, 0)
 		if st.TLS >= 2 {
-			continue // 目标仍在: 空闲降速属正常, 不动
+			continue // target still in place: idle downshift is normal, leave it alone
 		}
-		fmt.Println("[守护] 检测到 TLS<2 — Gen2 解锁配置丢失, 自动重新解锁...")
+		fmt.Println("[guardian] Detected TLS<2 - Gen2 unlock configuration lost, automatically re-running unlock...")
 		gen2Main()
 	}
 }
 
-// ---------- Gen2 -hard 回退: Root Link Disable + PnP 恢复 (Stage 2) ----------
-// 仅当显式 50HXInstaller.exe -gen2 -hard 时进入。普通/计划任务路径绝不触发,
-// 因为 Root Link Disable 会让 nvidia-smi 短暂报 "GPU is lost"(链路瞬断+驱动重置)。
-// 对齐社区 byovd.py(member573, issue #11, 2026-09-06 多卡实测):
-//   retrain-only 在寨板/多卡不足 → Root Link Disable 循环(PL0+TLS 保持)使
-//   LNKCAP.max=2 训上 Gen2 → PnP 禁用/启用 50HX 恢复 "GPU is lost" →
-//   Retrain-ONLY(不再二次 LD, 保驱动健康) → 重启 NVDisplay.ContainerLocalSystem。
-// 代码层无法判断"当前 Gen1 是空闲降速还是真训不上", 故 -hard 交给用户手动裁决。
+// ---------- Gen2 -hard fallback: Root Link Disable + PnP restore (Stage 2) ----------
+// Entered only when explicitly running '50HXInstaller.exe -gen2 -hard'. Normal / scheduled-task paths never trigger it,
+// because Root Link Disable causes nvidia-smi to briefly report "GPU is lost" (instant link drop + driver reset).
+// Aligned with community byovd.py (member573, issue #11, 2026-09-06 multi-GPU testing):
+//   retrain-only is not enough on cheap boards / multi-GPU -> a Root Link Disable loop (PL0 + TLS held) makes
+//   LNKCAP.max=2 train up to Gen2 -> PnP disable/enable the 50HX to restore "GPU is lost" ->
+//   Retrain-ONLY (no second LD, to keep driver health) -> restart NVDisplay.ContainerLocalSystem.
+// The code layer cannot tell whether "current Gen1" is an idle downshift or a true failed train, so -hard is left to manual judgement.
 
 func gen2WritePL0(th syscall.Handle, bar0Phys uint64) {
 	pl0 := []struct {
@@ -1520,18 +1525,18 @@ func gen2WritePL0(th syscall.Handle, bar0Phys uint64) {
 	}
 	for _, p := range pl0 {
 		if werr := hxcore.TSWrite(th, bar0Phys+p.off, p.val); werr != nil {
-			fmt.Printf("  [!] %s 写失败: %v\n", p.name, werr)
+			fmt.Printf("  [!] %s write failed: %v\n", p.name, werr)
 			continue
 		}
 		if rb, rerr := hxcore.TSRead(th, bar0Phys+p.off); rerr != nil || rb != p.val {
-			fmt.Printf("  [warn] %s 读回 0x%08x (期望 0x%08x)\n", p.name, rb, p.val)
+			fmt.Printf("  [warn] %s read-back 0x%08x (expected 0x%08x)\n", p.name, rb, p.val)
 		} else {
 			fmt.Printf("  %s OK (0x%08X)\n", p.name, rb)
 		}
 	}
 }
 
-// 16-bit LNKCTL2 写 TLS(只读改写 bit3:0, 保留其余位)
+// 16-bit LNKCTL2 TLS write (read-modify-write bits 3:0 only, preserve the rest)
 func gen2SetTLS(wh syscall.Handle, bdf uint32, tls uint16) {
 	if bdf == 0xFFFFFFFF {
 		return
@@ -1544,10 +1549,10 @@ func gen2SetTLS(wh syscall.Handle, bdf uint32, tls uint16) {
 	nv := uint16(cur&0xFFF0) | (tls & 0xF)
 	_ = hxcore.PciWr(wh, bdf, cap+0x30, []byte{byte(nv), byte(nv >> 8)})
 	rb, _ := hxcore.PciRd(wh, bdf, cap+0x30)
-	fmt.Printf("    TLS=%d 写 LNKCTL2 (0x%04X -> 0x%04X, 回读 TLS=%d)\n", tls, cur&0xFFFF, rb&0xFFFF, rb&0xF)
+	fmt.Printf("    TLS=%d write LNKCTL2 (0x%04X -> 0x%04X, read-back TLS=%d)\n", tls, cur&0xFFFF, rb&0xFFFF, rb&0xF)
 }
 
-// 16-bit LNKCTL 脉冲 retrain(bit5)
+// 16-bit LNKCTL retrain pulse (bit5)
 func gen2RetrainPulse(wh syscall.Handle, bdf uint32) {
 	if bdf == 0xFFFFFFFF {
 		return
@@ -1569,15 +1574,15 @@ func gen2RetrainPulse(wh syscall.Handle, bdf uint32) {
 	_ = hxcore.PciWr(wh, bdf, cap+0x10, buf2)
 }
 
-// Root Link Disable 循环(PL0+TLS 保持) — 使 LNKCAP.max=2 训上 Gen2
+// Root Link Disable loop (PL0 + TLS held) - makes LNKCAP.max=2 train up to Gen2
 func gen2RootLinkDisable(th syscall.Handle, wh *syscall.Handle, gpuBDF uint32, bar0Phys uint64, root uint32) {
 	if root == 0xFFFFFFFF {
-		fmt.Println("    [warn] 无 root port, 跳过 Link Disable")
+		fmt.Println("    [warn] no root port, skipped Link Disable")
 		return
 	}
 	cap := hxcore.PcieCap(*wh, root)
 	if cap == 0 {
-		fmt.Println("    [warn] root 无 PCIe cap, 跳过 Link Disable")
+		fmt.Println("    [warn] root has no PCIe cap, skipped Link Disable")
 		return
 	}
 	ctl, _ := hxcore.PciRd(*wh, root, cap+0x10)
@@ -1586,48 +1591,48 @@ func gen2RootLinkDisable(th syscall.Handle, wh *syscall.Handle, gpuBDF uint32, b
 	set := lo | 0x10 // bit4 = Link Disable
 	_ = hxcore.PciWr(*wh, root, cap+0x10, []byte{byte(set), byte(set >> 8)})
 	time.Sleep(500 * time.Millisecond)
-	// PL0 + TLS 在 link down 期间保持
+	// PL0 + TLS held while the link is down
 	gen2WritePL0(th, bar0Phys)
 	gen2SetTLS(*wh, root, 2)
 	gen2SetTLS(*wh, gpuBDF, 2)
-	// clear bit4 → 重新训练
+	// clear bit4 -> retrain
 	ctl2, _ := hxcore.PciRd(*wh, root, cap+0x10)
 	clr := uint16(ctl2&0xFFFF) &^ 0x10
 	_ = hxcore.PciWr(*wh, root, cap+0x10, []byte{byte(clr), byte(clr >> 8)})
 	time.Sleep(2000 * time.Millisecond)
 }
 
-// PnP 禁用/启用 50HX — 恢复 Link Disable 后的 "GPU is lost"(nvidia-smi/GPU-Z 断连)
+// PnP disable/enable 50HX - restores "GPU is lost" after Link Disable (nvidia-smi / GPU-Z disconnect)
 func gen2PnpRecover40HX() bool {
 	ps := `$iid=(Get-PnpDevice -Class Display | Where-Object { $_.InstanceId -match 'DEV_1E09' } | Select-Object -First 1).InstanceId; ` +
 		`if($iid){ Disable-PnpDevice -InstanceId $iid -Confirm:$false; Start-Sleep -Seconds 2; ` +
 		`Enable-PnpDevice -InstanceId $iid -Confirm:$false; Start-Sleep -Seconds 4; Write-Output "PnP-OK $iid" } ` +
 		`else { Write-Output 'PnP-NONE' }`
 	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput()
-	fmt.Printf("    PnP 恢复: %s (err=%v)\n", strings.TrimSpace(string(out)), err)
+	fmt.Printf("    PnP restore: %s (err=%v)\n", strings.TrimSpace(string(out)), err)
 	return err == nil && strings.Contains(string(out), "PnP-OK")
 }
 
-// 重启 NVDisplay 容器(恢复 GPU-Z / 任务管理器的显示, Link Disable 后常需)
+// Restart NVDisplay container (restore GPU-Z / Task Manager display, often needed after Link Disable)
 func gen2RestartNVDisplay() {
 	ps := `Restart-Service NVDisplay.ContainerLocalSystem -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2`
 	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput()
-	fmt.Printf("    NVDisplay 容器重启: %s (err=%v)\n", strings.TrimSpace(string(out)), err)
+	fmt.Printf("    NVDisplay container restart: %s (err=%v)\n", strings.TrimSpace(string(out)), err)
 }
 
-// -hard 回退中 PnP 导致 GPU reset, 旧 \\.\ThrottleStop / WinRing0 句柄可能失效 → 重开
+// During -hard fallback PnP triggers a GPU reset, old \\.\ThrottleStop / WinRing0 handles may be invalidated -> reopen
 func gen2ReopenDrivers(th, wh *syscall.Handle) bool {
 	hxcore.CloseHandle(*th)
 	hxcore.CloseHandle(*wh)
 	ok := true
 	if nt, e := hxcore.OpenThrottleStop(); e != nil {
-		fmt.Printf("    [!] ThrottleStop 重开失败: %v\n", e)
+		fmt.Printf("    [!] ThrottleStop reopen failed: %v\n", e)
 		ok = false
 	} else {
 		*th = nt
 	}
 	if nw, e := hxcore.OpenDevice(`\\.\WinRing0_1_2_0`); e != nil {
-		fmt.Printf("    [!] WinRing0 重开失败: %v\n", e)
+		fmt.Printf("    [!] WinRing0 reopen failed: %v\n", e)
 		ok = false
 	} else {
 		*wh = nw
@@ -1635,7 +1640,7 @@ func gen2ReopenDrivers(th, wh *syscall.Handle) bool {
 	return ok
 }
 
-// 恢复 GPU LNKCTL CCC(0x0140, Common Clock + Extended Synch) — 保 NVAPI/GPU-Z 健康
+// Restore GPU LNKCTL CCC (0x0140, Common Clock + Extended Synch) - keeps NVAPI / GPU-Z healthy
 func gen2RestoreGPULnkctl(wh syscall.Handle, gpuBDF uint32) {
 	cap := hxcore.PcieCap(wh, gpuBDF)
 	if cap == 0 {
@@ -1647,16 +1652,16 @@ func gen2RestoreGPULnkctl(wh syscall.Handle, gpuBDF uint32) {
 		want := (cur &^ 0x3) | 0x0140
 		_ = hxcore.PciWr(wh, gpuBDF, cap+0x10, []byte{byte(want), byte(want >> 8)})
 		rb, _ := hxcore.PciRd(wh, gpuBDF, cap+0x10)
-		fmt.Printf("    GPU LNKCTL 恢复 0x%04X -> 0x%04X\n", cur, rb&0xFFFF)
+		fmt.Printf("    GPU LNKCTL restore 0x%04X -> 0x%04X\n", cur, rb&0xFFFF)
 	}
 }
 
-// Stage2 编排: LD → retrain → PnP 恢复 → retrain-only → NVDisplay 重启。自行写结论。
+// Stage2 orchestration: LD -> retrain -> PnP restore -> retrain-only -> NVDisplay restart. Writes its own verdict.
 func gen2HardFallback(th, wh *syscall.Handle, gpuBDF uint32, bar0Phys uint64, root uint32) {
-	fmt.Println("\n[Gen2 -hard] === Link Disable 回退路径 (Stage 2) ===")
-	fmt.Println("[Gen2 -hard] 警告: 此路径会让 nvidia-smi 短暂报 'GPU is lost'(链路瞬断+驱动重置),")
-	fmt.Println("[Gen2 -hard] 约数秒后经 PnP 恢复。仅在你确认 retrain-only 在贵硬件训不上时手动使用。")
-	// 链路重置后 BAR 可能重映射 → 重新确认 BAR0
+	fmt.Println("\n[Gen2 -hard] === Link Disable fallback path (Stage 2) ===")
+	fmt.Println("[Gen2 -hard] WARNING: this path causes nvidia-smi to briefly report 'GPU is lost' (instant link drop + driver reset),")
+	fmt.Println("[Gen2 -hard] and after a few seconds PnP restore runs. Only use manually after confirming that retrain-only does not work on your hardware.")
+	// BAR may be remapped after the link reset -> re-confirm BAR0
 	if bar0raw, _ := hxcore.PciRd(*wh, gpuBDF, 0x10); bar0raw != 0 && bar0raw != 0xFFFFFFFF {
 		bar0Phys = uint64(bar0raw & 0xFFFFFFF0)
 	}
@@ -1664,19 +1669,19 @@ func gen2HardFallback(th, wh *syscall.Handle, gpuBDF uint32, bar0Phys uint64, ro
 	didLD := false
 	// 1. re-assert PL0
 	gen2WritePL0(*th, bar0Phys)
-	// 2. Root Link Disable 循环
+	// 2. Root Link Disable loop
 	if root != 0xFFFFFFFF {
 		gen2RootLinkDisable(*th, wh, gpuBDF, bar0Phys, root)
 		didLD = true
 	}
 	cur := hxcore.LinkSpeed(*wh, gpuBDF)
-	fmt.Printf("[Gen2 -hard] Link Disable 后: Gen%d\n", cur)
-	// 3. 仍 Gen1 → retrain 脉冲(交替) 最多 6 轮
+	fmt.Printf("[Gen2 -hard] After Link Disable: Gen%d\n", cur)
+	// 3. Still Gen1 -> alternating retrain pulses for up to 6 rounds
 	if cur < 2 {
 		for i := 0; i < 6; i++ {
-			// 社区 byovd.py: retrain 第 3 轮(attempts==2)仍 Gen1 再走一次 Link Disable 循环
+			// Community byovd.py: if retrain round 3 (i==2) is still Gen1, run one more Link Disable loop
 			if i == 2 && cur < 2 && root != 0xFFFFFFFF {
-				fmt.Println("[Gen2 -hard] retrain 仍失败 → 二次 Link Disable 循环")
+				fmt.Println("[Gen2 -hard] retrain still failed -> second Link Disable loop")
 				gen2RootLinkDisable(*th, wh, gpuBDF, bar0Phys, root)
 			}
 			gen2WritePL0(*th, bar0Phys)
@@ -1696,23 +1701,23 @@ func gen2HardFallback(th, wh *syscall.Handle, gpuBDF uint32, bar0Phys uint64, ro
 			}
 		}
 	}
-	// 4. PnP 恢复 "GPU is lost" + retrain-only + NVDisplay 重启
-	// v2.6.0: 只要做过 Link Disable 就无条件恢复(此前仅成功时恢复 —
-	// 失败时 GPU 悬在 lost 态, 用户只能设备管理器手动禁用/启用, 社区抱怨来源之一)
+	// 4. PnP restore "GPU is lost" + retrain-only + NVDisplay restart
+	// v2.6.0: unconditionally restore whenever Link Disable was performed (previously only restored on success -
+	// on failure the GPU would hang in the lost state, forcing the user to manually disable/enable in Device Manager, a common source of community complaints)
 	if didLD {
 		if cur >= 2 {
-			fmt.Println("[Gen2 -hard] 已训上 Gen2, 执行 PnP 恢复 + NVDisplay 重启")
+			fmt.Println("[Gen2 -hard] Trained to Gen2, running PnP restore + NVDisplay restart")
 		} else {
-			fmt.Println("[Gen2 -hard] 训练未成, 仍执行 PnP 恢复确保 GPU 回到正常状态")
+			fmt.Println("[Gen2 -hard] Training did not succeed; still running PnP restore to ensure the GPU returns to a normal state")
 		}
 		gen2PnpRecover40HX()
 		if !gen2ReopenDrivers(th, wh) {
-			fmt.Println("[Gen2 -hard][!] 驱动重开失败, 中止后续恢复")
+			fmt.Println("[Gen2 -hard][!] driver reopen failed, aborted subsequent restore")
 			gen2VerdictHard(gpuBDF, cur, false)
 			return
 		}
 		time.Sleep(3000 * time.Millisecond)
-		// retrain-only(不再二次 LD)
+		// retrain-only (no second LD)
 		if bar0raw, _ := hxcore.PciRd(*wh, gpuBDF, 0x10); bar0raw != 0 && bar0raw != 0xFFFFFFFF {
 			bar0Phys = uint64(bar0raw & 0xFFFFFFF0)
 		}
@@ -1734,41 +1739,41 @@ func gen2HardFallback(th, wh *syscall.Handle, gpuBDF uint32, bar0Phys uint64, ro
 		gen2RestoreGPULnkctl(*wh, gpuBDF)
 		gen2RestartNVDisplay()
 		cur = hxcore.LinkSpeed(*wh, gpuBDF)
-		fmt.Printf("[Gen2 -hard] PnP 恢复后: Gen%d\n", cur)
+		fmt.Printf("[Gen2 -hard] After PnP restore: Gen%d\n", cur)
 	}
 	gen2VerdictHard(gpuBDF, cur, cur >= 2)
 }
 
 func gen2VerdictHard(gpuBDF uint32, cur uint32, success bool) {
-	// v2.6.0: 与 Stage1 verdict 同一套重试策略 — 成功清重试任务, 失败按预算再排
+	// v2.6.0: same retry policy as Stage1 verdict - on success clear the retry task; on failure reschedule within the budget
 	if success {
 		deleteGen2Retry()
 	} else {
 		scheduleGen2Retry(retryDepth())
 	}
 	gpuBus := (gpuBDF >> 8) & 0xFF
-	st := fmt.Sprintf("结论(Link Disable 回退): %s\n50HX 位置: %02x:%02x.%x\n链路: 当前 Gen%d\n驱动: ThrottleStop=✓ WinRing0=✓ (BYOVD, 按策略收尾)\n",
-		map[bool]string{true: "✅ Gen2 成功", false: "❌ Gen2 失败(见日志/发社区)"}[success],
+	st := fmt.Sprintf("Verdict (Link Disable fallback): %s\n50HX location: %02x:%02x.%x\nLink: current Gen%d\ndrivers: ThrottleStop=OK WinRing0=OK (BYOVD, clean up per policy)\n",
+		map[bool]string{true: "OK Gen2 success", false: "FAIL Gen2 (see log / post to community)"}[success],
 		gpuBus, (gpuBDF>>3)&0x1F, gpuBDF&7, cur)
 	if wErr := hxcore.WriteGen2Status(st); wErr != nil {
-		fmt.Printf("[Gen2 -hard] 状态写入失败: %v\n", wErr)
+		fmt.Printf("[Gen2 -hard] status write failed: %v\n", wErr)
 	}
 	if !hasArg("-silent") && !hasArg("-y") {
 		icon := uint(mbIconInfo)
-		txt := fmt.Sprintf("Gen2 回退: 当前 Gen%d\n", cur)
+		txt := fmt.Sprintf("Gen2 fallback: current Gen%d\n", cur)
 		if success {
-			txt += "=== GEN2 解锁成功 ==="
+			txt += "=== GEN2 UNLOCK SUCCESS ==="
 		} else {
-			txt += "仍在 Gen1, 回退未成(详见日志)。"
+			txt += "still at Gen1, fallback did not succeed (see log)."
 			icon = mbIconError
 		}
 		msgbox("50HX Gen2", txt, icon)
 	}
 }
 
-// ---------- v2.6.0: Gen2 自动重试 + Stage2 自动回退开关 + 策略配置 ----------
+// ---------- v2.6.0: Gen2 automatic retry + Stage2 automatic fallback switch + policy config ----------
 
-// retryDepth: 当前自动重试深度(-retrydepth=N, 0=登录任务首次执行)
+// retryDepth: current automatic retry depth (-retrydepth=N, 0=first run by the logon task)
 func retryDepth() int {
 	for _, a := range os.Args {
 		if strings.HasPrefix(a, "-retrydepth=") {
@@ -1780,25 +1785,26 @@ func retryDepth() int {
 	return 0
 }
 
-// gen2AutoHardEnabled: Stage2(Link Disable + PnP 恢复)自动执行开关, 默认开。
-// 关闭: reg add HKLM\SOFTWARE\50HXUnlock /v Gen2AutoHard /t REG_DWORD /d 0 /f
-// (50HX 是唯一显示卡、不希望登录后链路瞬断数秒黑屏的用户可关)
+// gen2AutoHardEnabled: switch for automatically running Stage2 (Link Disable + PnP restore); enabled by default.
+// Disable: reg add HKLM\SOFTWARE\50HXUnlock /v Gen2AutoHard /t REG_DWORD /d 0 /f
+// (machines where the 50HX is the only display card and a few seconds of black screen right after logon is not desired can disable it)
 func gen2AutoHardEnabled() bool {
 	return hxcore.ConfigInt("Gen2AutoHard", 1) != 0
 }
 
-// scheduleGen2Retry: 失败后安排一次性自动重试(SYSTEM, 静默, 默认 15 分钟后)。
-// 覆盖"开机后驱动/GSP 就绪慢""链路状态恰好卡住"等时序类失败(社区 #12);
-// depth 为已重试次数, 超出策略预算(Gen2RetryCount)即不再排; 成功路径 deleteGen2Retry。
+// scheduleGen2Retry: after failure, schedule a one-shot automatic retry (SYSTEM, silent, default 15 minutes later).
+// Overrides "slow driver/GSP ready after boot" / "link state just stuck" timing-style failures (community #12);
+// 'depth' is the retry count; once the policy budget (Gen2RetryCount) is exceeded, no further retries are scheduled;
+// the success path calls deleteGen2Retry.
 func scheduleGen2Retry(depth int) {
 	count, interval := hxcore.Gen2RetryPolicy()
 	if depth >= count {
-		fmt.Printf("[Gen2] 自动重试预算已用完(%d/%d), 等下次登录再试\n", depth, count)
+		fmt.Printf("[Gen2] automatic retry budget exhausted (%d/%d), waiting for next logon to try again\n", depth, count)
 		return
 	}
 	t := time.Now().Add(time.Duration(interval) * time.Minute)
 	if t.Day() != time.Now().Day() {
-		fmt.Println("[Gen2] 接近零点, 跳过本次重试排程(once 任务跨日期不可靠)")
+		fmt.Println("[Gen2] near midnight, skipping this session's retry schedule (a once-task crossing midnight is unreliable)")
 		return
 	}
 	exe, err := os.Executable()
@@ -1810,27 +1816,27 @@ func scheduleGen2Retry(depth int) {
 		"/tr", fmt.Sprintf("\"%s\" -gen2 -silent -retrydepth=%d", abs, depth+1),
 		"/sc", "once", "/st", t.Format("15:04"), "/ru", "SYSTEM", "/f")
 	if err != nil {
-		fmt.Printf("[Gen2] 重试任务创建失败(不影响解锁): %s\n", strings.TrimSpace(out))
+		fmt.Printf("[Gen2] retry task creation failed (does not affect unlock): %s\n", strings.TrimSpace(out))
 		return
 	}
-	fmt.Printf("[Gen2] 已安排 %d 分钟后自动重试(%d/%d, 任务 %s)\n", interval, depth+1, count, gen2RetryTask)
+	fmt.Printf("[Gen2] scheduled an automatic retry in %d minutes (%d/%d, task %s)\n", interval, depth+1, count, gen2RetryTask)
 }
 
-// deleteGen2Retry: Gen2 达成后清掉可能存在的重试任务
+// deleteGen2Retry: after Gen2 succeeds, clean up any retry task that may exist
 func deleteGen2Retry() {
 	hxcore.RunOut("schtasks.exe", "/delete", "/tn", gen2RetryTask, "/f")
 }
 
-// gen2AcquireSingleInstance: v2.6.0 单实例保护。
-// 返回 (是否取得独占, 释放函数)。未取得 = 已有别的实例在跑, 调用方应直接退出。
-// 用内核全局互斥体 Global\50HXGen2SingleInstance: 跨用户/会话可见, 进程崩溃内核自动
-// 释放, 比文件锁更可靠(文件锁挡不住两个进程同时 sc start 同一服务名)。
+// gen2AcquireSingleInstance: v2.6.0 single-instance protection.
+// Returns (whether exclusivity was acquired, release function). If not acquired = another instance is running, the caller should exit directly.
+// Uses the kernel global mutex 'Global\50HXGen2SingleInstance': visible across users / sessions; if a process crashes, the kernel releases it automatically.
+// More reliable than a file lock (which cannot stop two processes from simultaneously calling 'sc start' on the same service name).
 func gen2AcquireSingleInstance() (bool, func()) {
 	name, _ := windows.UTF16PtrFromString("Global\\50HXGen2SingleInstance")
 	h, err := windows.CreateMutex(nil, true, name)
 	if err != nil {
-		// 拿不到互斥体 → 放行(宁可多跑一次, 不漏解锁)
-		fmt.Println("[Gen2] 单实例互斥体创建失败, 放行:", err)
+		// Could not create the mutex -> let it pass (better to run one extra time than to miss an unlock)
+		fmt.Println("[Gen2] single-instance mutex creation failed, letting it pass:", err)
 		return true, func() {}
 	}
 	if windows.GetLastError() == windows.ERROR_ALREADY_EXISTS {
@@ -1843,37 +1849,37 @@ func gen2AcquireSingleInstance() (bool, func()) {
 	}
 }
 
-// waitForNvDriver: v2.6.0 时序保护 — 必须等 nvlddmkm 真正 RUNNING 后再动 GPU。
-// 抢在 nv 驱动初始化前 retrain 会被 nv 起来后重置 PCIe 链路 / 覆盖 GPU 寄存器,
-// 既冲掉 Gen2, 又可能触发 code19(安装器注释 §785 已实证)。服务不存在(nv 未装)则
-// 直接放行; 超时(60s)仍继续, 不阻塞解锁。
+// waitForNvDriver: v2.6.0 timing protection - must wait until nvlddmkm is actually RUNNING before touching the GPU.
+// Retraining before the NV driver initialises will cause the driver (once up) to reset the PCIe link /
+// overwrite GPU registers, which both wipes out Gen2 and can trigger code 19 (Installer comment around line 785).
+// If the service does not exist (NV not installed), let it pass directly; if the 60s timeout is reached, continue anyway (does not block the unlock).
 func waitForNvDriver(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
 		out, _ := hxcore.RunOut("sc.exe", "query", "nvlddmkm")
-		if strings.Contains(out, "does not exist") || strings.Contains(out, "未安装") ||
+		if strings.Contains(out, "does not exist") || strings.Contains(out, "not installed") ||
 			strings.Contains(out, "1060") {
-			fmt.Println("[Gen2] 未检测到 nvlddmkm 服务, 跳过等待直接解锁")
+			fmt.Println("[Gen2] nvlddmkm service not detected, skipping the wait and unlocking directly")
 			return true
 		}
 		if strings.Contains(out, "RUNNING") {
 			return true
 		}
 		if time.Now().After(deadline) {
-			fmt.Printf("[Gen2] nvlddmkm 在 %s 内未进入 RUNNING(详见日志), 仍继续解锁\n", timeout)
+			fmt.Printf("[Gen2] nvlddmkm did not enter RUNNING within %s (see log), continuing the unlock anyway\n", timeout)
 			return false
 		}
-		fmt.Println("[Gen2] 等待 nvlddmkm 就绪...")
+		fmt.Println("[Gen2] waiting for nvlddmkm to be ready...")
 		time.Sleep(2 * time.Second)
 	}
 }
 
-// cleanupByovd: v2.5 用完即卸 — 停止并删除 ThrottleStop/WinRing0 服务与驱动文件。
-// 在 gen2Main 末尾(defers)执行, 游戏时系统无第三方驱动残留。
-// v2.6.0: 尊重驱动运行策略 — 常驻策略保留服务与文件(GUI 有反作弊风险提示)。
+// cleanupByovd: v2.5 remove-when-done - stops and deletes the ThrottleStop / WinRing0 services and driver files.
+// Runs at the end of gen2Main (via defers), so no third-party drivers are left in the system while gaming.
+// v2.6.0: respect the driver run policy - the resident policy keeps the service and files (the GUI shows an anti-cheat risk hint).
 func cleanupByovd() {
 	if hxcore.DriverStrategy() == hxcore.DriverStrategyResident {
-		fmt.Println("[Gen2] 常驻策略: 保留驱动服务与文件(GUI/卸载器可移除)")
+		fmt.Println("[Gen2] resident policy: keeping the driver service and files (the GUI / uninstaller can remove them)")
 		return
 	}
 	appRunning := throttleStopAppRunning()
@@ -1881,9 +1887,9 @@ func cleanupByovd() {
 		{"ThrottleStop", "ThrottleStop.sys"},
 		{"WinRing0_1_2_0", "WinRing0x64.sys"},
 	} {
-		// 本机 ThrottleStop 软件正在用该驱动 → 不删(避免打断用户软件);
-		// 否则保持"用完即卸": 停服务 + 删服务 + 删文件 → 内核无驻留、磁盘无残留,
-		// 反作弊(尤其 Vanguard 类的磁盘扫描)不会在游戏时扫到 vulnerable 驱动。
+		// If the local ThrottleStop software is using the driver -> do not delete (to avoid disrupting the user's software);
+		// otherwise keep the "remove-when-done" behavior: stop service + delete service + delete files -> no kernel residency, no on-disk residue,
+		// so anti-cheat (especially disk scanners like Vanguard) will not scan for vulnerable drivers while gaming.
 		if appRunning {
 			continue
 		}
@@ -1893,199 +1899,202 @@ func cleanupByovd() {
 	}
 }
 
-// gen2Notify: 失败提示; 静默模式不弹框
+// gen2Notify: failure hint; in silent mode no popup
 func gen2Notify(txt string) {
 	if !hasArg("-silent") && !hasArg("-y") {
 		msgbox("50HX Gen2", txt, mbIconError)
 	}
 }
 
-// gen2StatusFail: v2.4.6 — 把 Gen2 未执行/失败的原因写入状态文件,
-// 供 40HXCheck 展示(SYSTEM 任务在 Session 0 无法弹窗给用户看)。
+// gen2StatusFail: v2.4.6 - writes the Gen2 not-run / failure reason into the status file,
+// for 40HXCheck to display (the SYSTEM task in Session 0 cannot pop up dialogs for the user).
 func gen2StatusFail(reason string) {
-	ident := map[bool]string{true: "管理员/SYSTEM", false: "普通用户(受限)"}[isAdmin()]
-	hxcore.WriteGen2Status("❌ Gen2 未执行: " + reason + "\n运行身份: " + ident + "\n")
+	ident := map[bool]string{true: "administrator/SYSTEM", false: "normal user (limited)"}[isAdmin()]
+	hxcore.WriteGen2Status("FAIL Gen2 did not run: " + reason + "\nrun identity: " + ident + "\n")
 }
 
-// ===================== 卸载/状态 =====================
+// ===================== uninstall/status =====================
 
 func uninstall() {
 	if !isAdmin() {
-		fmt.Println("[!] 需要管理员权限。")
-		msgbox("50HX 安装器", "需要管理员权限。\n请右键本程序 -> 以管理员身份运行。", mbIconError)
+		fmt.Println("[!] Administrator permissions are required.")
+		msgbox("50HX Installer", "Administrator permissions are required.\nPlease right-click this program -> Run as administrator.", mbIconError)
 		return
 	}
 	if lockOnce(`Local\40HXUninstaller_v1`) == nil {
-		msgbox("50HX 安装器", "卸载程序已在运行, 请勿重复点击。", mbIconInfo)
+		msgbox("50HX Installer", "The uninstall program is already running; please do not click again.", mbIconInfo)
 		return
 	}
-	// v2.6.0 修复: 全部走 hxcore 组件实现(与 50HXUninstaller.exe / GUI 页④ 同源)。
-	// 此前内置版只删 Run键+任务+两个旧服务, 且固件启动项用 /enum {fwbootmgr}
-	// 定位 — 该段输出没有各启动项 description, "50HX Unlock" 永不匹配 →
-	// 启动项删不掉, EFI/GSP/驱动文件也全残留, 卸载后开机仍会执行解锁。
-	fmt.Println("=== 卸载 50HX 解锁 (v3.0.0 组件级) ===")
-	fmt.Print("[1/8] 删除计划任务 ... ")
+	// v2.6.0 repair: all steps go through the hxcore components (same source as 50HXUninstaller.exe / GUI page 4).
+	// Previously the inbuilt version only deleted the Run key + task + two old services, and the firmware boot entry
+	// was located via '/enum {fwbootmgr}' - that output section has no per-entry description, so "50HX Unlock"
+	// never matched ->
+	// the boot entry could not be deleted; the EFI / GSP / driver files all remained, and after uninstall
+	// the boot would still run the unlock.
+	fmt.Println("=== Uninstall 50HX unlock (v3.0.0 component-level) ===")
+	fmt.Print("[1/8] Delete scheduled task ... ")
 	if rem := hxcore.UninstallTasks(); len(rem) > 0 {
-		fmt.Println("完成")
+		fmt.Println("done")
 	} else {
-		fmt.Println("未找到(跳过)")
+		fmt.Println("not found (skipped)")
 	}
-	fmt.Print("[2/8] 删除 Gen2 Run 键 ... ")
+	fmt.Print("[2/8] Delete Gen2 Run key ... ")
 	hxcore.UninstallRunKey()
-	fmt.Println("完成")
-	fmt.Print("[3/8] 删除固件启动项 '50HX Unlock' ... ")
+	fmt.Println("done")
+	fmt.Print("[3/8] Delete firmware boot entry '50HX Unlock' ... ")
 	if hxcore.UninstallBootEntry() {
-		fmt.Println("完成")
+		fmt.Println("done")
 	} else {
-		fmt.Println("未找到(可能已移除)")
+		fmt.Println("not found (possibly removed already)")
 	}
-	fmt.Print("[4/8] 删除 ESP 解锁 EFI ... ")
+	fmt.Print("[4/8] Delete ESP unlock EFI ... ")
 	if hxcore.UninstallEspEfi() {
-		fmt.Println("完成")
+		fmt.Println("done")
 	} else {
-		fmt.Println("未找到/跳过")
+		fmt.Println("not found / skipped")
 	}
-	fmt.Println("[5/8] 停止并删除驱动服务...")
+	fmt.Println("[5/8] Stop and delete driver services...")
 	hxcore.UninstallDriverServices()
-	fmt.Println("[6/8] 删除驱动文件...")
+	fmt.Println("[6/8] Delete driver files...")
 	hxcore.UninstallDriverFiles()
-	fmt.Print("[6.5/8] 删除 EnableGpuFirmware (恢复 GSP 默认关) ... ")
+	fmt.Print("[6.5/8] Delete EnableGpuFirmware (restore GSP default-off) ... ")
 	if hxcore.UninstallGspKey() {
-		fmt.Println("完成")
+		fmt.Println("done")
 	} else {
-		fmt.Println("未找到(跳过)")
+		fmt.Println("not found (skipped)")
 	}
-	fmt.Print("[6.6/8] 清理 ProgramData + 策略键 ... ")
+	fmt.Print("[6.6/8] Clean up ProgramData + policy keys ... ")
 	hxcore.UninstallProgramData()
-	fmt.Println("完成")
-	fmt.Print("[6.7/8] 清理 Defender 排除项 ... ")
+	fmt.Println("done")
+	fmt.Print("[6.7/8] Clean up Defender exclusions ... ")
 	if err := hxcore.RemoveDefenderExclusions(); err != nil {
-		fmt.Println("未执行(可忽略):", err)
+		fmt.Println("not run (ignorable):", err)
 	} else {
-		fmt.Println("完成")
+		fmt.Println("done")
 	}
-	fmt.Println("[7/8] 检查残留...")
+	fmt.Println("[7/8] Check leftover...")
 	left := hxcore.CheckLeftover()
 	fmt.Println()
-	fmt.Println("卸载完成。建议重启电脑。")
-	fmt.Println("  注: 安装时调整的电源设置(快速启动/ASPM)保留未动 — 恢复方法见 README §2.4。")
+	fmt.Println("Uninstall done. Recommend rebooting the computer.")
+	fmt.Println("  Note: power settings adjusted during install (Fast Startup / ASPM) are left untouched - see README section 2.4 for restore instructions.")
 	icon := uint(mbIconInfo)
-	txt := "卸载完成。\n建议重启电脑。\n\n注: 安装时调整的电源设置(快速启动/ASPM)\n保留未动 — 属电源偏好, 恢复方法见 README §2.4。\n"
+	txt := "Uninstall done.\nRecommend rebooting the computer.\n\nNote: power settings adjusted during install (Fast Startup / ASPM)\nare left untouched - they are a power preference; see README section 2.4 for restore instructions.\n"
 	if len(left) > 0 {
 		icon = mbIconError
-		txt += "\n仍有残留:\n" + strings.Join(left, "\n")
+		txt += "\nLeftover items:\n" + strings.Join(left, "\n")
 	}
-	txt += "\n详细日志: " + filepath.Join(os.TempDir(), "50HX_installer.log")
-	msgbox("50HX 安装器", txt, icon)
+	txt += "\nDetailed log: " + filepath.Join(os.TempDir(), "50HX_installer.log")
+	msgbox("50HX Installer", txt, icon)
 }
 
 func status() {
-	fmt.Println("=== 50HX 解锁状态 ===")
+	fmt.Println("=== 50HX unlock status ===")
 	gpuOK := hxcore.FindGPU()
 	sb := hxcore.SecureBootOn()
 	ts := hxcore.TestSigningOn()
 	gs := hxcore.GspEnabled()
-	fmt.Printf("GPU 50HX 检测: %v\n", gpuOK)
+	fmt.Printf("GPU 50HX detection: %v\n", gpuOK)
 	fmt.Printf("Secure Boot: %v\n", sb)
-	fmt.Printf("测试签名: %v\n", ts)
-	fmt.Printf("GSP 启用 (EnableGpuFirmware=1): %v\n", gs)
-	// v2.4.1: GSP 定位诊断 — 伪装/魔改驱动会 AdapterString≠"CMP 50HX"
+	fmt.Printf("Test signing: %v\n", ts)
+	fmt.Printf("GSP enable (EnableGpuFirmware=1): %v\n", gs)
+	// v2.4.1: GSP location diagnostics - disguised / modded drivers have AdapterString != "CMP 50HX"
 	if sub, adapter, fw := hxcore.GspDiag(); sub != "" {
-		fmt.Printf("  GSP 键: Class\\%s (fw=%d)\n", sub, fw)
+		fmt.Printf("  GSP key: Class\\%s (fw=%d)\n", sub, fw)
 		fmt.Printf("  AdapterString: %s\n", adapter)
 	} else {
-		fmt.Println("  [!] " + adapter) // 无匹配时 hxcore.GspDiag 返回诊断串
+		fmt.Println("  [!] " + adapter) // when no match, hxcore.GspDiag returns the diagnostic string
 	}
-	// v2.6.x: Gen2 驱动部署状态(不依赖驱动当前是否运行 — S0 用完即卸后
-	// System32 文件缺失属正常终态; 判据是备份源/服务/Defender, 见 hxcore/drvstate.go)
+	// v2.6.x: Gen2 driver deploy status (does not depend on whether the driver is currently running -
+	// after S0 remove-when-done the System32 file being missing is the normal end state;
+	// the criterion is backup source / service / Defender; see hxcore/drvstate.go)
 	dep := hxcore.InspectGen2Drivers()
 	if !hxcore.Gen2DriversDeployedOnce() {
-		fmt.Println("Gen2 驱动: 从未部署 — 运行安装器(页②勾选驱动)后重启生效")
+		fmt.Println("Gen2 driver: never deployed - run the installer (page 2, tick the driver) then reboot for it to take effect")
 	} else {
 		for _, d := range dep {
-			svcS := "未注册"
+			svcS := "not registered"
 			if d.SvcReg {
 				svcS = d.SvcStart
 				if d.SvcRunning {
-					svcS += "/运行中"
+					svcS += "/running"
 				}
 			}
-			fmt.Printf("Gen2 驱动 %-16s 备份源=%v  System32=%s  服务=%s\n",
-				d.File, map[bool]string{true: "OK", false: "无"}[d.BackupOK], d.SysState.String(), svcS)
+			fmt.Printf("Gen2 driver %-16s backup source=%v  System32=%s  service=%s\n",
+				d.File, map[bool]string{true: "OK", false: "missing"}[d.BackupOK], d.SysState.String(), svcS)
 		}
 	}
 	if ex, err := hxcore.DefenderExclusionsPresent(); err != nil {
-		fmt.Println("Defender 排除: 查询失败(" + err.Error() + ")")
+		fmt.Println("Defender exclusion: query failed (" + err.Error() + ")")
 	} else if ex {
-		fmt.Println("Defender 排除: 已加白(OK)")
+		fmt.Println("Defender exclusion: whitelisted (OK)")
 	} else {
-		fmt.Println("Defender 排除: 缺失 — 杀软可能误删驱动, 重跑安装器补加")
+		fmt.Println("Defender exclusion: missing - antivirus may delete the driver; re-run the installer to re-add")
 	}
-	// 驱动与解锁实测: 主判据 = 设备实际可打开(不依赖 sc.exe — 部分安全环境禁用它)
-	// v2.5: TS(ThrottleStop) + WinRing0 BYOVD, 不再需要 50hx_bridge
+	// driver and unlock live test: primary criterion = device actually openable (does not depend on sc.exe - some hardened environments disable it)
+	// v2.5: TS (ThrottleStop) + WinRing0 BYOVD; no longer need 50hx_bridge
 	st := hxcore.ReadUnlockStateV2(5, 800)
 	tsRun := st.TSOK
 	winringRun := st.WinRingOK
 	fmt.Printf("ThrottleStop: %v\n", tsRun)
 	fmt.Printf("WinRing0: %v\n", winringRun)
 	if tsRun && winringRun {
-		fmt.Printf("PCIe 链路: Gen%d\n", st.Speed)
+		fmt.Printf("PCIe link: Gen%d\n", st.Speed)
 		if st.SS0OK {
-			fmt.Printf("SS0(算力): 0x%08x %s\n", st.SS0, map[bool]string{true: "(已解锁)", false: "(锁定)"}[st.Unlocked])
+			fmt.Printf("SS0 (compute): 0x%08x %s\n", st.SS0, map[bool]string{true: "(unlocked)", false: "(locked)"}[st.Unlocked])
 		}
 	} else {
-		fmt.Println("驱动未运行(装好后 Gen2/状态可用)")
+		fmt.Println("Driver not running (once installed, Gen2 / status can be used)")
 	}
 	ss0 := st.SS0
 	ss0ok := st.SS0OK
 	speed := st.Speed
-	// v2.4: 弹窗带诊断与处置建议(社区用户不依赖日志)
+	// v2.4: popup includes diagnostics and recommended actions (community users don't need to depend on the log)
 	diag := []string{}
 	if !gpuOK {
-		diag = append(diag, "· 未检测到 50HX —— 请确认显卡已插入且驱动已装")
+		diag = append(diag, "- 50HX not detected - please confirm the GPU is seated and the driver is installed")
 	}
 	if sb {
-		diag = append(diag, "· Secure Boot 开启: 需进 BIOS 关闭, 否则解锁 EFI 被拒")
+		diag = append(diag, "- Secure Boot is on: enter the BIOS to disable it, otherwise the unlock EFI is rejected")
 	}
 	if ts {
-		diag = append(diag, "· 测试签名已开启 — v2.5 不需要, 可 bcdedit /set testsigning off 关闭")
+		diag = append(diag, "- Test signing is on - v2.5 does not need it; run 'bcdedit /set testsigning off' to disable")
 	}
 	if !gs {
-		diag = append(diag, "· GSP 未启用: 解锁后可能黑屏。运行安装器(自动设 EnableGpuFirmware=1)")
+		diag = append(diag, "- GSP is not enabled: may black screen after unlock. Run the installer (it will automatically set EnableGpuFirmware=1)")
 	}
 	if !tsRun || !winringRun {
-		diag = append(diag, "· 驱动未运行: 重启后登录会自动拉起; 或手动运行 50HXInstaller.exe -gen2")
+		diag = append(diag, "- Drivers are not running: they will be auto-started at the next logon; or run '50HXInstaller.exe -gen2' manually")
 	}
 	if tsRun && winringRun {
 		if !ss0ok {
-			diag = append(diag, "· 驱动已运行但读不到算力寄存器(异常)")
+			diag = append(diag, "- Drivers running but the compute register cannot be read (abnormal)")
 		} else if ss0 == 0x88888888 {
-			diag = append(diag, fmt.Sprintf("· SS0=0x%08x: 算力已解锁! PCIe Gen%d", ss0, speed))
+			diag = append(diag, fmt.Sprintf("- SS0=0x%08x: compute unlocked! PCIe Gen%d", ss0, speed))
 		} else {
-			diag = append(diag, fmt.Sprintf("· SS0=0x%08x: 算力仍锁定 —— 重启时 50HX Unlock EFI 未成功执行", ss0))
-			// v2.4.4: 读 EFI 解锁日志(50hx_log.txt)做自动诊断, 不再需要人工看日志
+			diag = append(diag, fmt.Sprintf("- SS0=0x%08x: compute still locked - the 50HX Unlock EFI did not run successfully at reboot", ss0))
+			// v2.4.4: read the EFI unlock log (50hx_log.txt) for automatic diagnostics; no need to read the log manually
 			efiDiag := hxcore.AnalyzeEfiLog()
 			if efiDiag != "" {
 				diag = append(diag, efiDiag)
 			}
 		}
 	}
-	msg := "50HX 解锁状态\n========================\n"
-	msg += fmt.Sprintf("GPU 40HX: %v    Secure Boot: %v\n", map[bool]string{true: "✓", false: "✗"}[gpuOK], map[bool]string{true: "开启!", false: "关闭(OK)"}[sb])
-	msg += fmt.Sprintf("测试签名: %v    GSP: %v\n", map[bool]string{true: "✓", false: "✗"}[ts], map[bool]string{true: "✓", false: "✗"}[gs])
-	msg += fmt.Sprintf("ThrottleStop: %v  WinRing0: %v\n", map[bool]string{true: "✓", false: "✗"}[tsRun], map[bool]string{true: "✓", false: "✗"}[winringRun])
+	msg := "50HX unlock status\n========================\n"
+	msg += fmt.Sprintf("GPU 40HX: %v    Secure Boot: %v\n", map[bool]string{true: "OK", false: "MISSING"}[gpuOK], map[bool]string{true: "ON!", false: "disabled (OK)"}[sb])
+	msg += fmt.Sprintf("Test signing: %v    GSP: %v\n", map[bool]string{true: "ON", false: "OFF"}[ts], map[bool]string{true: "ON", false: "OFF"}[gs])
+	msg += fmt.Sprintf("ThrottleStop: %v  WinRing0: %v\n", map[bool]string{true: "running", false: "stopped"}[tsRun], map[bool]string{true: "running", false: "stopped"}[winringRun])
 	if tsRun && winringRun {
 		msg += fmt.Sprintf("PCIe: Gen%d    SS0: 0x%08x\n", speed, ss0)
 	}
-	msg += "\n诊断:\n" + strings.Join(diag, "\n")
+	msg += "\nDiagnostics:\n" + strings.Join(diag, "\n")
 	if len(diag) == 0 {
-		msg += "· 一切正常"
+		msg += "- everything is normal"
 	}
-	msg += "\n\n详细日志: " + filepath.Join(os.TempDir(), "50HX_installer.log")
-	msgbox("50HX 状态", msg, mbIconInfo)
-	fmt.Println("=== 状态结束 ===")
+	msg += "\n\nDetailed log: " + filepath.Join(os.TempDir(), "50HX_installer.log")
+	msgbox("50HX status", msg, mbIconInfo)
+	fmt.Println("=== status finished ===")
 }
 
 func pause() {
-	// GUI 版: 无需按 Enter; 输出已入日志, 交互收尾用消息框
+	// GUI build: no need to press Enter; output goes to the log, interactive wrap-up uses the message box
 }

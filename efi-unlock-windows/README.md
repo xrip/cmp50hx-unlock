@@ -30,7 +30,7 @@ proven live on .224).
 
 The installer runs entirely from the host, requires no internet, takes
 ~1 minute for the default install path, and the first-time success
-prints a clean "已开启 GSP" / "已部署解锁 EFI" / "PCIe Gen2 训练完成"
+prints a clean "GSP enabled" / "Unlock EFI deployed" / "PCIe Gen2 trained"
 sequence.
 
 ## Prerequisite firmware settings
@@ -72,8 +72,8 @@ PowerShell one-shot:
 
 Run `50HXInstaller.exe` as Administrator (or right-click → "Run as
 administrator"). The GUI shows three sections and pre-selects everything
-that is not already in place; just click "安装所选组件". For a fully
-silent / scripted install:
+that is not already in place; just click "Install selected components".
+For a fully silent / scripted install:
 
 ```bat
 50HXInstaller.exe -y
@@ -91,8 +91,8 @@ unlock + chainload every time.
 ## Verification
 
 After the next reboot, run `50HXCheck.exe` as Administrator. The window
-shows the unlock state (算力 line: `✓ 满血 (SS0=0x88888888)`) and the
-PCIe state (line: `PCIe: Gen2 x4` = trained, `Gen1` = failed). For
+shows the unlock state (Compute line: `✓ Full unlock (SS0=0x88888888)`)
+and the PCIe state (line: `PCIe: Gen2 x4` = trained, `Gen1` = failed). For
 an end-to-end check run `OpenCL.exe` (same as the 40HX tool's reference
 benchmark) and compare to the locked baseline in
 [`../efi-unlock/runs/20260910-ab-stock-vs-efi.md`](../efi-unlock/runs/20260910-ab-stock-vs-efi.md):
@@ -100,7 +100,7 @@ a fully unlocked 50HX should show ~13.5 TFLOP/s FP32, ~48 TIOP/s INT8 DP4A.
 
 ## Rollback
 
-Either click "卸载" in the GUI, or:
+Either click "Uninstall" in the GUI, or:
 
 ```bat
 50HXUninstaller.exe

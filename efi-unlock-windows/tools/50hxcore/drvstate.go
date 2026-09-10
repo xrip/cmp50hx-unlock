@@ -1,61 +1,73 @@
 package hxcore
 
-// Gen2 BYOVD 驱动的"部署/安装状态"结构化检测 — 供 GUI 页①扫描 / 页②预勾选 /
-// 安装器 -status / 诊断工具共用, 消除各处"看文件在不在"的拍脑袋判定。
+// Structured detection of the Gen2 BYOVD drivers' deploy / install state
+// — shared by the GUI page-1 scan, page-2 pre-check, the installer's
+// -status flag, and the diagnostic tool. Eliminates ad-hoc "is the file
+// there?" checks scattered everywhere.
 //
-// 部署模型 (v2.5 起):
-//   1. 持久备份源  %ProgramData%\50HXUnlock\drivers\*.sys
-//      - installDrivers 每次部署都会写; cleanupByovd(用完即卸)不删它
-//      - 因此它是"曾部署过"的持久证据, 只有卸载器才删
-//   2. 瞬态部署    %SystemRoot%\System32\drivers\*.sys + demand 内核服务
-//      - "用完即卸"(S0)/"看门狗"(S1)成功后文件与服务被自清理 →
-//        文件缺失 ≠ 未安装! 要看备份源与当前策略才能下结论
-//   3. Defender 排除(两个 .sys + ProgramData 备份目录) — 防杀软误删
+// Deployment model (since v2.5):
+//   1. Persistent backup source  %ProgramData%\50HXUnlock\drivers\*.sys
+//      - installDrivers writes it on every deploy; cleanupByovd
+//        (remove-when-done) does not delete it.
+//      - Therefore this is the persistent "was it ever deployed?"
+//        evidence; only the uninstaller removes it.
+//   2. Transient deploy  %SystemRoot%\System32\drivers\*.sys + a demand
+//      kernel service
+//      - "Remove-when-done" (S0) / "watchdog" (S1) self-clean the file
+//        and service on success →
+//        file missing ≠ not installed! You have to look at the backup
+//        source and the current policy to draw a conclusion.
+//   3. Defender exclusion (the two .sys files + the ProgramData backup
+//      directory) — protects against AV false-deletion.
 //
-// 文件有效性规则:
-//   - 0 字节文件 = 杀软隔离占位(存在但不能算已部署)
-//   - System32 文件大小与备份源不一致 = 被替换/损坏(需重部署)
-//   - 服务被第三方/安全软件改成 DISABLED = Gen2 永远拉不起来(需提示修复)
-//   - demand 服务平时 STOPPED 属正常(登录任务才拉起), 不算失败
+// File-validity rules:
+//   - 0-byte file = AV quarantine placeholder (present, but cannot be
+//     counted as deployed).
+//   - System32 file size != backup source size = replaced / corrupted
+//     (needs redeploy).
+//   - Service changed to DISABLED by a third-party / security product =
+//     Gen2 can never start (prompt the user to repair).
+//   - demand service STOPPED at rest is normal (the logon task starts
+//     it); not a failure.
 
 import (
 	"os"
 	"path/filepath"
 )
 
-// DrvState: System32 驱动文件的四态
+// DrvState is the four-state model for a System32 driver file.
 type DrvState int
 
 const (
-	DrvAbsent       DrvState = iota // 不存在
-	DrvZero                         // 存在但 0 字节 — 杀软隔离占位
-	DrvOk                           // 存在且 >0
-	DrvSizeMismatch                 // 存在且 >0, 但与备份源大小不一致
+	DrvAbsent       DrvState = iota // missing
+	DrvZero                         // present but 0 bytes — AV quarantine placeholder
+	DrvOk                           // present and >0
+	DrvSizeMismatch                 // present and >0, but size disagrees with the backup source
 )
 
 func (s DrvState) String() string {
 	switch s {
 	case DrvZero:
-		return "0字节(疑似杀软隔离)"
+		return "0 bytes (likely AV quarantine)"
 	case DrvOk:
 		return "OK"
 	case DrvSizeMismatch:
-		return "大小与备份不一致"
+		return "Size differs from backup"
 	default:
-		return "缺失"
+		return "missing"
 	}
 }
 
-// DrvDeploy: 单个 Gen2 驱动的完整部署状态
+// DrvDeploy is the complete deploy status of one Gen2 driver.
 type DrvDeploy struct {
-	Service    string   // 服务名 ThrottleStop / WinRing0_1_2_0
-	File       string   // 文件名 ThrottleStop.sys / WinRing0x64.sys
-	BackupOK   bool     // %ProgramData%\50HXUnlock\drivers 备份源存在且 >0
-	SysState   DrvState // System32 文件状态
+	Service    string   // service name: ThrottleStop / WinRing0_1_2_0
+	File       string   // file name: ThrottleStop.sys / WinRing0x64.sys
+	BackupOK   bool     // the %ProgramData%\50HXUnlock\drivers backup source exists and is >0
+	SysState   DrvState // System32 file state
 	SysSize    int64
-	SvcReg     bool   // 服务已注册
+	SvcReg     bool   // service is registered
 	SvcStart   string // DEMAND/AUTO/DISABLED/BOOT/SYSTEM/UNKNOWN
-	SvcRunning bool   // 当前 RUNNING
+	SvcRunning bool   // currently RUNNING
 }
 
 type gen2Spec struct{ svc, file string }
@@ -65,7 +77,8 @@ var gen2Specs = []gen2Spec{
 	{"WinRing0_1_2_0", "WinRing0x64.sys"},
 }
 
-// PdDrvDir: %ProgramData%\50HXUnlock\drivers (安装器写入的持久备份源)
+// PdDrvDir returns %ProgramData%\50HXUnlock\drivers (the persistent
+// backup source written by the installer).
 func PdDrvDir() string {
 	base := os.Getenv("ProgramData")
 	if base == "" {
@@ -81,8 +94,9 @@ func sysRoot() string {
 	return `C:\Windows`
 }
 
-// InspectGen2Drivers: 逐一检查两个 Gen2 驱动: 备份源 / System32 文件 / 服务。
-// 全部为只读探测(sc query/qc/stat), 无任何副作用。
+// InspectGen2Drivers inspects each Gen2 driver one by one: backup source
+// / System32 file / service. All probes are read-only (sc query/qc/stat)
+// and have no side effects.
 func InspectGen2Drivers() []DrvDeploy {
 	out := make([]DrvDeploy, 0, len(gen2Specs))
 	for _, sp := range gen2Specs {
@@ -109,8 +123,9 @@ func InspectGen2Drivers() []DrvDeploy {
 	return out
 }
 
-// Gen2DriversDeployedOnce: 备份源是否存在 = "安装器是否部署过"的持久证据
-// (System32 文件会被"用完即卸"清掉, 不能用它判断是否装过)。
+// Gen2DriversDeployedOnce: does the backup source exist? = persistent
+// evidence of "the installer has ever deployed this" (System32 files get
+// wiped by "remove-when-done", so they cannot answer that question).
 func Gen2DriversDeployedOnce() bool {
 	for _, sp := range gen2Specs {
 		if st, _ := fileState(filepath.Join(PdDrvDir(), sp.file)); st == DrvOk {
@@ -120,9 +135,12 @@ func Gen2DriversDeployedOnce() bool {
 	return false
 }
 
-// Gen2DriversNeedDeploy: 页②预勾选判据 — 出现下列任一情况才需要(重新)部署:
-//   从未部署(备份源无) / 服务被 DISABLED / System32 文件 0 字节或与备份不一致。
-// "用完即卸"后 System32 缺失但备份源在 → 不需要部署(登录任务会自动重放)。
+// Gen2DriversNeedDeploy is the page-2 pre-check criterion — a
+// (re)deploy is required if ANY of the following holds:
+//   never deployed (no backup source) / service is DISABLED / System32
+//   file is 0 bytes or size-mismatched with the backup.
+// After "remove-when-done", System32 is missing but the backup source is
+// still there → no deploy needed (the logon task auto-replays).
 func Gen2DriversNeedDeploy() bool {
 	if !Gen2DriversDeployedOnce() {
 		return true

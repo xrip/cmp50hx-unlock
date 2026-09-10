@@ -8,10 +8,10 @@ import (
 	"unsafe"
 )
 
-// ---- 底层 handle / ioctl (50hx_bridge + WinRing0) ----
+// ---- Low-level handle / ioctl (50hx_bridge + WinRing0) ----
 var (
 	k32 = syscall.NewLazyDLL("kernel32.dll")
-	// 由 gen2/诊断用 lazy init
+	// Lazy-init for gen2 / diagnostics.
 	createFileW = k32.NewProc("CreateFileW")
 	devIoCtrl   = k32.NewProc("DeviceIoControl")
 	closeHandle = k32.NewProc("CloseHandle")
@@ -43,7 +43,7 @@ type pciIoIn struct {
 	Reg uint32
 }
 
-// OpenDevice: 打开 \\.\50hxBridge / \\.\WinRing0_1_2_0 等设备
+// OpenDevice opens a device such as \\.\50hxBridge or \\.\WinRing0_1_2_0.
 func OpenDevice(name string) (syscall.Handle, error) {
 	ptr, _, _ := createFileW.Call(
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(name))),
@@ -57,7 +57,7 @@ func OpenDevice(name string) (syscall.Handle, error) {
 	return syscall.Handle(ptr), nil
 }
 
-// IoCtl: DeviceIoControl 封装
+// IoCtl is a DeviceIoControl wrapper.
 func IoCtl(h syscall.Handle, code uint32, in []byte, out []byte) (uint32, error) {
 	var n uint32
 	var inPtr, outPtr uintptr
@@ -78,7 +78,7 @@ func IoCtl(h syscall.Handle, code uint32, in []byte, out []byte) (uint32, error)
 	return n, nil
 }
 
-// CloseHandle: 关闭设备句柄
+// CloseHandle closes a device handle.
 func CloseHandle(h syscall.Handle) {
 	if h != 0 {
 		closeHandle.Call(uintptr(h))
@@ -87,7 +87,7 @@ func CloseHandle(h syscall.Handle) {
 
 // ---- BAR0 via 50hx_bridge ----
 
-// Bar0Rd: 读 GPU BAR0 偏移 off 处 4 字节
+// Bar0Rd reads 4 bytes from GPU BAR0 at the given offset.
 func Bar0Rd(bh syscall.Handle, off uint64) (uint32, error) {
 	in := bar0RdIn{Offset: off, Count: 1}
 	out := make([]byte, 4)
@@ -101,7 +101,7 @@ func Bar0Rd(bh syscall.Handle, off uint64) (uint32, error) {
 	return binary.LittleEndian.Uint32(out), nil
 }
 
-// Bar0Wr: 写 GPU BAR0 (返回旧值/新值)
+// Bar0Wr writes to GPU BAR0 (returns old/new value).
 func Bar0Wr(bh syscall.Handle, off uint64, val uint32) (uint32, uint32, error) {
 	ib := make([]byte, 12)
 	binary.LittleEndian.PutUint64(ib[0:], off)
@@ -116,7 +116,7 @@ func Bar0Wr(bh syscall.Handle, off uint64, val uint32) (uint32, uint32, error) {
 
 // ---- PCI config via WinRing0 ----
 
-// PciRd: 读 PCI config (bdf=bus<<8|dev<<3|fn)
+// PciRd reads PCI config (bdf=bus<<8|dev<<3|fn).
 func PciRd(wh syscall.Handle, bdf uint32, reg uint32) (uint32, error) {
 	ib := make([]byte, 8)
 	binary.LittleEndian.PutUint32(ib[0:], bdf)
@@ -129,7 +129,7 @@ func PciRd(wh syscall.Handle, bdf uint32, reg uint32) (uint32, error) {
 	return binary.LittleEndian.Uint32(ob), nil
 }
 
-// PciWr: 写 PCI config
+// PciWr writes PCI config.
 func PciWr(wh syscall.Handle, bdf uint32, reg uint32, data []byte) error {
 	ib := make([]byte, 8+len(data))
 	binary.LittleEndian.PutUint32(ib[0:], bdf)
@@ -139,7 +139,7 @@ func PciWr(wh syscall.Handle, bdf uint32, reg uint32, data []byte) error {
 	return err
 }
 
-// PcieCap: 定位 PCIe 能力指针; 0=未找到
+// PcieCap locates the PCIe capability pointer; 0=not found.
 func PcieCap(wh syscall.Handle, bdf uint32) uint32 {
 	hdr, err := PciRd(wh, bdf, 0x34)
 	if err != nil {
@@ -162,7 +162,7 @@ func PcieCap(wh syscall.Handle, bdf uint32) uint32 {
 	return 0
 }
 
-// LinkSpeed: 读当前 PCIe link speed (gen)
+// LinkSpeed reads the current PCIe link speed (gen).
 func LinkSpeed(wh syscall.Handle, bdf uint32) uint32 {
 	cap := PcieCap(wh, bdf)
 	if cap == 0 {
@@ -175,9 +175,11 @@ func LinkSpeed(wh syscall.Handle, bdf uint32) uint32 {
 	return v & 0xF
 }
 
-// LinkWidth: 读当前协商链路宽度(lanes, 0=未知)。同样来自 LNKSTA:
-// [9:4] = negotiated link width, 编码值即通道数(1/2/4/8/16/32)。
-// 速率 Gen 与宽度都要看 — "Gen2" ≠ 满带宽; x8 是槽位/通道分配问题, 与解锁无关。
+// LinkWidth reads the current negotiated link width (lanes, 0=unknown).
+// Also comes from LNKSTA: [9:4] = negotiated link width — the encoded
+// value is the lane count (1/2/4/8/16/32). Both gen and width matter —
+// "Gen2" ≠ full bandwidth; x8 is a slot / lane-allocation issue,
+// unrelated to the unlock.
 func LinkWidth(wh syscall.Handle, bdf uint32) uint32 {
 	cap := PcieCap(wh, bdf)
 	if cap == 0 {
@@ -190,7 +192,8 @@ func LinkWidth(wh syscall.Handle, bdf uint32) uint32 {
 	return (v >> 4) & 0x3F
 }
 
-// FindRootPort: 在 bus0 找 secondary bus == gpuBus 的 PCIe 根端口 BDF
+// FindRootPort finds the PCIe root port BDF on bus 0 whose secondary bus
+// equals gpuBus.
 func FindRootPort(wh syscall.Handle, gpuBus uint32) uint32 {
 	for d := uint32(0); d < 32; d++ {
 		for f := uint32(0); f < 8; f++ {

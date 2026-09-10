@@ -1,9 +1,14 @@
 package hxcore
 
-// v2.6.0: 卸载操作上提 50hxcore — GUI 组件级卸载与 50HXUninstaller.exe 共用同一实现,
-// 消除两份漂移副本(原 uninstall50x 私有函数)。
-// 全部为破坏性操作, 调用方(GUI 卸载页/卸载器)负责确认与提权。
-// 电源设置(快速启动/ASPM)属用户偏好, 刻意不提供回滚操作 — 恢复方法见 README。
+// v2.6.0: uninstall operations lifted into 50hxcore — the GUI
+// component-level uninstall and 50HXUninstaller.exe share a single
+// implementation, eliminating the two drifting copies (the previous
+// private functions in uninstall50x).
+// All of these are destructive; the caller (GUI uninstall page /
+// uninstaller) is responsible for confirmation and elevation.
+// Power settings (Fast Startup / ASPM) are user preferences — we
+// deliberately do not provide a rollback; recovery is documented in the
+// README.
 
 import (
 	"fmt"
@@ -17,23 +22,25 @@ import (
 
 const bootDesc40 = "50HX Unlock"
 
-// UninstallTaskNames: 本工具历史上用过的全部计划任务名(含 50HXGen2Retry 重试任务)
+// UninstallTaskNames is the complete list of scheduled task names this
+// tool has ever used (including the 50HXGen2Retry retry task).
 var UninstallTaskNames = []string{"50HXGen2", "50HX PCIe Gen2 Bring-up", "50HXGen2Retry", "50HXGspEnsure"}
 
-// UninstallTasks: 删除计划任务, 返回实际删掉的名字
+// UninstallTasks removes the scheduled tasks; returns the names that
+// were actually deleted.
 func UninstallTasks() []string {
 	var removed []string
 	for _, tn := range UninstallTaskNames {
 		out, err := RunOut("schtasks.exe", "/delete", "/tn", tn, "/f")
 		if err == nil || strings.Contains(out, "成功") || strings.Contains(strings.ToLower(out), "success") {
-			fmt.Printf("  已删除计划任务 %s\n", tn)
+			fmt.Printf("  Scheduled task %s removed\n", tn)
 			removed = append(removed, tn)
 		}
 	}
 	return removed
 }
 
-// UninstallRunKey: 删 HKCU Run 值 50HXGen2
+// UninstallRunKey deletes the HKCU Run value "50HXGen2".
 func UninstallRunKey() {
 	k, err := registry.OpenKey(registry.CURRENT_USER,
 		`Software\Microsoft\Windows\CurrentVersion\Run`, registry.SET_VALUE)
@@ -43,7 +50,8 @@ func UninstallRunKey() {
 	}
 }
 
-// UninstallBootEntry: 删固件启动项 '50HX Unlock', 返回是否删除过
+// UninstallBootEntry removes the '50HX Unlock' firmware boot entry;
+// returns whether anything was deleted.
 func UninstallBootEntry() bool {
 	out, err := RunOut("bcdedit.exe", "/enum", "firmware")
 	if err != nil {
@@ -61,7 +69,7 @@ func UninstallBootEntry() bool {
 		}
 		if strings.Contains(ln, bootDesc40) && curGuid != "" {
 			RunOut("bcdedit.exe", "/delete", "{"+curGuid+"}", "/f")
-			fmt.Printf("  已删除启动项 %s\n", curGuid)
+			fmt.Printf("  Boot entry %s removed\n", curGuid)
 			removed = true
 			curGuid = ""
 		}
@@ -69,8 +77,10 @@ func UninstallBootEntry() bool {
 	return removed
 }
 
-// UninstallEspEfi: 删 \EFI\50HX\50HXUNLK.EFI; bootx64.efi 用"覆盖写+校验"从
-// .50hx.bak 还原(不用 删→rename — 中间窗口会让机器起不来)。返回是否动过 ESP。
+// UninstallEspEfi removes \EFI\50HX\50HXUNLK.EFI; bootx64.efi is restored
+// from .50hx.bak by "overwrite + verify" (NOT delete → rename — the
+// in-between window would prevent the machine from booting). Returns
+// whether the ESP was touched.
 func UninstallEspEfi() bool {
 	esp := MountESP()
 	if esp == "" {
@@ -85,31 +95,33 @@ func UninstallEspEfi() bool {
 	if entries, err := os.ReadDir(esp + ":\\EFI\\40HX"); err == nil && len(entries) == 0 {
 		os.Remove(esp + ":\\EFI\\40HX")
 	}
-	// v3.0.0: EFI 运行时写的历史日志一并清除 — 否则卸载后 40HXCheck 会把它
-	// 当本次日志分析, 给没装 EFI 的用户派无关引导。
+	// v3.0.0: also clear the historical log written by the EFI runtime
+	// — otherwise 40HXCheck will read it as the current log and dispatch
+	// unrelated boot guidance to users without the EFI installed.
 	if err := os.Remove(esp + ":\\50hx_log.txt"); err == nil {
-		fmt.Println("    已删除历史 EFI 日志 50hx_log.txt")
+		fmt.Println("    Historical EFI log 50hx_log.txt removed")
 	}
 	std := esp + ":\\EFI\\Boot\\bootx64.efi"
 	bak := esp + ":\\EFI\\Boot\\bootx64.efi.50hx.bak"
 	if data, berr := os.ReadFile(bak); berr == nil {
 		if werr := os.WriteFile(std, data, 0o644); werr != nil {
-			fmt.Println("  [!] 还原 bootx64.efi 写失败:", werr)
-			fmt.Println("      原备份仍保留在 bootx64.efi.50hx.bak, 可手动还原")
+			fmt.Println("  [!] bootx64.efi restore write failed:", werr)
+			fmt.Println("      Original backup remains at bootx64.efi.50hx.bak, can be restored manually")
 			return removed
 		}
 		if rb, rerr := os.ReadFile(std); rerr == nil && len(rb) == len(data) {
 			os.Remove(bak)
-			fmt.Println("    已还原原 bootx64.efi (来自 .50hx.bak, 校验 OK)")
+			fmt.Println("    Original bootx64.efi restored (from .50hx.bak, verify OK)")
 		} else {
-			fmt.Println("  [!] bootx64.efi 还原后校验不一致 — 保留 .bak 供手动处理")
+			fmt.Println("  [!] bootx64.efi verification mismatch after restore — keeping .bak for manual handling")
 		}
 		removed = true
 	}
 	return removed
 }
 
-// UninstallDriverServices: 停止并删除历史驱动服务(v2.5 BYOVD + 旧版 bridge/early)
+// UninstallDriverServices stops and removes the historical driver services
+// (v2.5 BYOVD + legacy bridge/early).
 func UninstallDriverServices() {
 	for _, name := range []string{"ThrottleStop", "50hx_bridge", "50hx_early", "50hx_early-d", "WinRing0_1_2_0", "WinRing0x64", "WinRing0"} {
 		RunOut("sc.exe", "stop", name)
@@ -117,31 +129,33 @@ func UninstallDriverServices() {
 		out, err := RunOut("sc.exe", "delete", name)
 		switch {
 		case err == nil || strings.Contains(strings.ToLower(out), "success") || strings.Contains(out, "成功"):
-			fmt.Printf("  服务 %s 已删除\n", name)
+			fmt.Printf("  Service %s removed\n", name)
 		case strings.Contains(out, "不存在") || strings.Contains(strings.ToLower(out), "not") || strings.Contains(out, "1060"):
-			fmt.Printf("  服务 %s 不存在(跳过)\n", name)
+			fmt.Printf("  Service %s not present (skipped)\n", name)
 		default:
-			fmt.Printf("  服务 %s 删除失败: %s\n", name, strings.TrimSpace(out))
+			fmt.Printf("  Service %s delete failed: %s\n", name, strings.TrimSpace(out))
 		}
 	}
 }
 
-// UninstallDriverFiles: 删 System32\drivers 下历史 .sys 与 System32\WinRing0x64.dll
+// UninstallDriverFiles removes the legacy .sys files under System32\drivers
+// and System32\WinRing0x64.dll.
 func UninstallDriverFiles() {
 	for _, name := range []string{"ThrottleStop.sys", "50hx_bridge.sys", "50hx_early-d.sys", "50hx_early.sys", "WinRing0x64.sys"} {
 		p := os.Getenv("SystemRoot") + "\\System32\\drivers\\" + name
 		if err := os.Remove(p); err != nil {
 			if _, statErr := os.Stat(p); statErr == nil {
-				fmt.Printf("  %s 删除失败(可能被占用, 重启后自动可删)\n", name)
+				fmt.Printf("  %s delete failed (may be in use; will be removable after reboot)\n", name)
 			}
 		} else {
-			fmt.Printf("  已删除 %s\n", name)
+			fmt.Printf("  %s removed\n", name)
 		}
 	}
 	os.Remove(os.Getenv("SystemRoot") + "\\System32\\WinRing0x64.dll")
 }
 
-// UninstallGspKey: 删 EnableGpuFirmware(恢复 GSP 默认关), 返回是否删除过
+// UninstallGspKey removes EnableGpuFirmware (restores GSP to its default
+// off state); returns whether anything was deleted.
 func UninstallGspKey() bool {
 	key := FindGpuClassKey()
 	if key == "" {
@@ -158,8 +172,10 @@ func UninstallGspKey() bool {
 	return true
 }
 
-// UninstallProgramData: 清 ProgramData\50HXUnlock (gen2_status 历史缓存 + 驱动备份)。
-// gen2_status.txt 必须删 — 诊断工具会把它当"上次结果"显示, 残留 ✅ 会误导用户。
+// UninstallProgramData clears ProgramData\50HXUnlock (gen2_status
+// historical cache + driver backup).
+// gen2_status.txt MUST be removed — the diagnostic tool surfaces it as
+// the "last result"; leaving a residual ✅ would mislead the user.
 func UninstallProgramData() {
 	base := os.Getenv("ProgramData")
 	if base == "" {
@@ -171,53 +187,58 @@ func UninstallProgramData() {
 	if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
 		os.Remove(dir)
 	}
-	// v2.6.0 修复: 策略键一并删除 — 否则卸载后 DriverStrategy/Gen2AutoHard 等
-	// 残留, 重装会继承旧策略而非默认(README §2.5 承诺"卸载器会一并删除")。
+	// v2.6.0 fix: also remove the policy key — otherwise
+	// DriverStrategy / Gen2AutoHard etc. linger after uninstall and the
+	// reinstall inherits the old policy instead of the defaults (README
+	// §2.5 promises "the uninstaller removes them too").
 	DeleteConfig()
-	fmt.Println("  策略键 HKLM\\SOFTWARE\\50HXUnlock 已删除(重装回到默认策略)")
+	fmt.Println("  Policy key HKLM\\SOFTWARE\\50HXUnlock removed (reinstall returns to default policy)")
 }
 
-// CheckLeftover: 卸载收尾的残留清单(供 GUI/卸载器展示)
+// CheckLeftover returns a leftover list for the post-uninstall summary
+// (displayed by the GUI / uninstaller).
 func CheckLeftover() []string {
 	var rem []string
 	if out, _ := RunOut("bcdedit.exe", "/enum", "firmware"); strings.Contains(out, bootDesc40) {
-		rem = append(rem, "- 固件启动项 '50HX Unlock'(BIOS 手动删除)")
-		fmt.Println("  [!] 启动项仍有残留: bcdedit /delete {guid} /f (见 BIOS 菜单)")
+		rem = append(rem, "- Firmware boot entry '50HX Unlock' (delete from BIOS)")
+		fmt.Println("  [!] Boot entry still present: bcdedit /delete {guid} /f (also see BIOS menu)")
 	} else {
-		fmt.Println("  启动项: 已清理")
+		fmt.Println("  Boot entry: cleaned")
 	}
 	if k, err := registry.OpenKey(registry.CURRENT_USER,
 		`Software\Microsoft\Windows\CurrentVersion\Run`, registry.QUERY_VALUE); err == nil {
 		if _, _, e := k.GetStringValue("50HXGen2"); e == nil {
-			rem = append(rem, "- Run 键 50HXGen2")
-			fmt.Println("  [!] Run 键仍有残留")
+			rem = append(rem, "- Run key 50HXGen2")
+			fmt.Println("  [!] Run key still present")
 		}
 		k.Close()
 	}
 	taskLeft := false
 	for _, tn := range UninstallTaskNames {
 		if _, err := RunOut("schtasks.exe", "/query", "/tn", tn); err == nil {
-			rem = append(rem, "- 计划任务 "+tn)
-			fmt.Println("  [!] 计划任务 " + tn + " 仍有残留")
+			rem = append(rem, "- Scheduled task "+tn)
+			fmt.Println("  [!] Scheduled task " + tn + " still present")
 			taskLeft = true
 		}
 	}
 	if !taskLeft {
-		fmt.Println("  计划任务: 已清理")
+		fmt.Println("  Scheduled tasks: cleaned")
 	}
-	// v3.0.0: 补查驱动服务与 System32 驱动文件 — 常驻策略/文件被占用时
-	// 卸载可能只删了服务注册、文件要重启后才能删, 不能假装干净。
+	// v3.0.0: also probe driver services and System32 driver files —
+	// under the resident policy or when files are in use, uninstall may
+	// only have removed the service registration, with the files only
+	// deletable after a reboot. Don't pretend it's clean.
 	svcNames := []string{"ThrottleStop", "50hx_bridge", "50hx_early", "50hx_early-d", "WinRing0_1_2_0", "WinRing0x64", "WinRing0"}
 	svcLeft := false
 	for _, sn := range svcNames {
 		if _, err := RunOut("sc.exe", "query", sn); err == nil {
-			rem = append(rem, "- 驱动服务 "+sn)
-			fmt.Println("  [!] 驱动服务 " + sn + " 仍有残留(可能仍在运行, 重启后重跑卸载器)")
+			rem = append(rem, "- Driver service "+sn)
+			fmt.Println("  [!] Driver service " + sn + " still present (may still be running; reboot and re-run uninstaller)")
 			svcLeft = true
 		}
 	}
 	if !svcLeft {
-		fmt.Println("  驱动服务: 已清理")
+		fmt.Println("  Driver services: cleaned")
 	}
 	sysRoot := os.Getenv("SystemRoot")
 	if sysRoot == "" {
@@ -226,28 +247,28 @@ func CheckLeftover() []string {
 	fileLeft := false
 	for _, fn := range []string{"ThrottleStop.sys", "50hx_bridge.sys", "50hx_early-d.sys", "50hx_early.sys", "WinRing0x64.sys"} {
 		if _, err := os.Stat(sysRoot + "\\System32\\drivers\\" + fn); err == nil {
-			rem = append(rem, "- 驱动文件 " + fn)
-			fmt.Println("  [!] 驱动文件 " + fn + " 仍有残留(可能被占用, 重启后重跑卸载器)")
+			rem = append(rem, "- Driver file " + fn)
+			fmt.Println("  [!] Driver file " + fn + " still present (may be in use; reboot and re-run uninstaller)")
 			fileLeft = true
 		}
 	}
 	if !fileLeft {
-		fmt.Println("  驱动文件: 已清理")
+		fmt.Println("  Driver files: cleaned")
 	}
 	if esp := MountESP(); esp != "" {
 		if _, err := os.Stat(esp + ":\\EFI\\50HX\\50HXUNLK.EFI"); err == nil {
-			rem = append(rem, "- ESP 解锁 EFI 文件")
-			fmt.Println("  [!] ESP 解锁 EFI 仍有残留")
+			rem = append(rem, "- ESP unlock EFI file")
+			fmt.Println("  [!] ESP unlock EFI still present")
 		} else {
-			fmt.Println("  ESP 解锁 EFI: 已清理")
+			fmt.Println("  ESP unlock EFI: cleaned")
 		}
 		if _, err := os.Stat(esp + ":\\EFI\\Boot\\bootx64.efi.50hx.bak"); err == nil {
-			rem = append(rem, "- bootx64.efi.50hx.bak 备份未还原")
-			fmt.Println("  [!] bootx64.efi.50hx.bak 备份仍存在")
+			rem = append(rem, "- bootx64.efi.50hx.bak backup not restored")
+			fmt.Println("  [!] bootx64.efi.50hx.bak backup still present")
 		}
 		if _, err := os.Stat(esp + ":\\50hx_log.txt"); err == nil {
-			rem = append(rem, "- ESP 根 50hx_log.txt (历史 EFI 日志)")
-			fmt.Println("  [!] 50hx_log.txt 历史日志仍存在(再跑一次卸载器即清除)")
+			rem = append(rem, "- ESP root 50hx_log.txt (historical EFI log)")
+			fmt.Println("  [!] 50hx_log.txt historical log still present (run uninstaller once more to clear)")
 		}
 		RunOut("mountvol.exe", esp+":", "/D")
 	}
@@ -257,17 +278,17 @@ func CheckLeftover() []string {
 	}
 	pdDir := base + "\\50HXUnlock"
 	if _, err := os.Stat(pdDir + "\\gen2_status.txt"); err == nil {
-		rem = append(rem, "- ProgramData\\50HXUnlock\\gen2_status.txt (诊断缓存)")
-		fmt.Println("  [!] gen2_status.txt 仍有残留")
+		rem = append(rem, "- ProgramData\\50HXUnlock\\gen2_status.txt (diagnostic cache)")
+		fmt.Println("  [!] gen2_status.txt still present")
 	}
 	if _, err := os.Stat(pdDir + "\\drivers"); err == nil {
-		rem = append(rem, "- ProgramData\\50HXUnlock\\drivers (驱动备份)")
-		fmt.Println("  [!] drivers 备份仍有残留")
+		rem = append(rem, "- ProgramData\\50HXUnlock\\drivers (driver backup)")
+		fmt.Println("  [!] drivers backup still present")
 	}
 	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, ConfigKeyPath, registry.QUERY_VALUE); err == nil {
 		k.Close()
-		rem = append(rem, "- HKLM\\SOFTWARE\\50HXUnlock 策略键")
-		fmt.Println("  [!] 策略配置键 HKLM\\SOFTWARE\\50HXUnlock 仍有残留")
+		rem = append(rem, "- HKLM\\SOFTWARE\\50HXUnlock policy key")
+		fmt.Println("  [!] Policy config key HKLM\\SOFTWARE\\50HXUnlock still present")
 	}
 	return rem
 }

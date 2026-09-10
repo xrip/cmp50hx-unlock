@@ -6,15 +6,18 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// FindGpuClassKey: 定位 50HX 的显示适配器 Class 子键 (0000/0001/...)
-// 返回子键完整路径; 找不到返回 ""。
+// FindGpuClassKey locates the 50HX display-adapter Class subkey
+// (0000/0001/...). Returns the full subkey path, or "" if not found.
 //
-// v2.4.2 重写 — 不再依赖 AdapterString 名字匹配!
-// 伪装驱动(社区魔改把 50HX 显示成 RTX 2070/2060S 等)只能改
-// AdapterString/FriendlyName/DeviceDesc, 改不了 PCI 硬件 ID 与 Enum 节点
-// 的 Driver 值。正解 = 从 Enum\PCI\VEN_10DE&DEV_1E09\*\* 的 Driver 值
-// (形如 "{4d36e968-...}\0001") 反查 Class 子键, 与卡名无关。
-// 名字匹配(AdapterString 含 CMP 50HX / 2070 / 2060S)仅作 Enum 缺失兜底。
+// v2.4.2 rewrite — no longer relies on AdapterString name matching!
+// Disguising drivers (community mods that make the 50HX appear as an
+// RTX 2070 / 2060S, etc.) can only change AdapterString / FriendlyName /
+// DeviceDesc — they cannot touch the PCI hardware ID or the Enum-node
+// Driver value. The correct path: reverse-lookup the Class subkey from
+// the Driver value (e.g. "{4d36e968-...}\0001") of
+// Enum\PCI\VEN_10DE&DEV_1E09\*\*, independent of the card name. The
+// name match (AdapterString containing CMP 50HX / 2070 / 2060S) is only a
+// fallback for when the Enum reverse-lookup is missing.
 func FindGpuClassKey() string {
 	if key := findGpuClassKeyByEnum(); key != "" {
 		return key
@@ -22,9 +25,9 @@ func FindGpuClassKey() string {
 	return findGpuClassKeyByName()
 }
 
-// findGpuClassKeyByEnum: 遍历 Enum\PCI 下 VEN_10DE&DEV_1E09 各实例,
-// 读 Driver 值 "{classGUID}\000x" → 拼接成 Class 路径返回。
-// 伪装驱动(2070/2060S)不影响此路径。
+// findGpuClassKeyByEnum walks each VEN_10DE&DEV_1E09 instance under
+// Enum\PCI, reads the Driver value "{classGUID}\000x", then composes
+// the Class path. Disguising drivers (2070 / 2060S) do not affect this path.
 func findGpuClassKeyByEnum() string {
 	base, err := registry.OpenKey(registry.LOCAL_MACHINE, GpuEnumBase,
 		registry.ENUMERATE_SUB_KEYS)
@@ -65,9 +68,10 @@ func findGpuClassKeyByEnum() string {
 	return ""
 }
 
-// findGpuClassKeyByName: 名字匹配兜底。伪装驱动时 AdapterString 可能是
-// "NVIDIA GeForce RTX 2070"/"2060 SUPER" 等 → 这些名字也要认。
-// 仅当 Enum 反查失败才走这里(正常不会)。
+// findGpuClassKeyByName is the name-matching fallback. A disguising
+// driver may set AdapterString to "NVIDIA GeForce RTX 2070" /
+// "2060 SUPER", etc. — those names must also be recognized.
+// Only used when the Enum reverse-lookup fails (which is not normal).
 func findGpuClassKeyByName() string {
 	alias := []string{GpuAdapter40, "2070", "2060", "2060 SUPER", "2060 super"}
 	base, err := registry.OpenKey(registry.LOCAL_MACHINE, GpuClassPath,
@@ -88,7 +92,8 @@ func findGpuClassKeyByName() string {
 		}
 		adapter, _, _ := k.GetStringValue(GpuAdapterStr)
 		desc, _, _ := k.GetStringValue("DriverDesc")
-		// 伪装驱动可能只改 DriverDesc(设备管理器显示名)
+		// A disguising driver may only override DriverDesc (the
+		// Device Manager display name).
 		hay := adapter + " " + desc
 		k.Close()
 		for _, a := range alias {
@@ -100,7 +105,7 @@ func findGpuClassKeyByName() string {
 	return ""
 }
 
-// GspEnabled: 读当前 EnableGpuFirmware (1=开, 0/缺省=关)
+// GspEnabled reads the current EnableGpuFirmware value (1=on, 0/missing=off).
 func GspEnabled() bool {
 	key := FindGpuClassKey()
 	if key == "" {
@@ -115,9 +120,12 @@ func GspEnabled() bool {
 	return err == nil && v == 1
 }
 
-// GspDiag: 诊断 — 返回 (匹配到的子键短名, 该键 AdapterString/DriverDesc,
-// EnableGpuFirmware 值)。找不到时 sub="" 且第二返回值是"全部子键列表"诊断串。
-// 伪装/魔改驱动(识别成 2070 等)不影响 Enum 反查; 此函数便于展示真实键位。
+// GspDiag is the diagnostic helper — returns (matched subkey short name,
+// the AdapterString/DriverDesc at that key, the EnableGpuFirmware value).
+// When nothing matches, sub="" and the second return is a diagnostic
+// "complete subkey listing" string. Disguising / modded drivers (the card
+// appearing as 2070 etc.) do not affect the Enum reverse-lookup; this
+// function makes it easy to show the real key location.
 func GspDiag() (string, string, int64) {
 	key := findGpuClassKeyByEnum()
 	if key == "" {
@@ -144,12 +152,12 @@ func GspDiag() (string, string, int64) {
 				}
 			}
 		}
-		return "", "(无 50HX 匹配! 实际子键: " + sb.String() + ")", -1
+		return "", "(no 50HX match! Actual subkeys: " + sb.String() + ")", -1
 	}
 	sub := key[strings.LastIndex(key, `\`)+1:]
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, key, registry.QUERY_VALUE)
 	if err != nil {
-		return sub, "(读取失败)", -1
+		return sub, "(read failed)", -1
 	}
 	defer k.Close()
 	adapter, _, _ := k.GetStringValue(GpuAdapterStr)

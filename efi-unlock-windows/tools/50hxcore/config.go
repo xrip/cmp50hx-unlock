@@ -4,21 +4,22 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// v2.6.0: Gen2 运行策略配置中心 (HKLM\SOFTWARE\50HXUnlock)。
-// GUI 策略页与 CLI 都只读写这里; -gen2 每次启动时读取。
-// 全部键缺省即合理默认(用完即卸 + 自动 Stage2 + 失败自动重试 3 次/1 分钟,
-// v3.0.1 起间隔默认 1 分钟); 键缺失时用这些默认值。
+// v2.6.0: Gen2 runtime policy configuration hub (HKLM\SOFTWARE\50HXUnlock).
+// The GUI policy page and the CLI both read/write only here; -gen2 reads
+// from here on every start. Missing keys fall back to reasonable defaults
+// (remove-when-done + automatic Stage2 + auto-retry on failure 3 times per
+// 1 minute; since v3.0.1 the default interval is 1 minute).
 
 const ConfigKeyPath = `SOFTWARE\50HXUnlock`
 
-// 驱动运行策略 (DriverStrategy)
+// Driver runtime strategy (DriverStrategy)
 const (
-	DriverStrategyTransient = 0 // 用完即卸(默认): 解锁后停服务+删文件, 反作弊干净
-	DriverStrategyWatchdog  = 1 // 失败自动重试(旧名"看门狗"): 失败按下方节奏自动再试, 成功后仍卸
-	DriverStrategyResident  = 2 // 常驻守护(v3.0.1): 服务保持加载 + 登录任务每分钟自查 Gen2, TLS 丢失自动重训
+	DriverStrategyTransient = 0 // Remove-when-done (default): stop service + delete files after unlock; clean against anti-cheat
+	DriverStrategyWatchdog  = 1 // Auto-retry on failure (legacy "watchdog"): retry on failure using the schedule below; still remove on success
+	DriverStrategyResident  = 2 // Resident guardian (v3.0.1): service stays loaded + a logon task re-checks Gen2 every minute; auto-retrains if TLS is lost
 )
 
-// ConfigInt: 读 DWORD 配置, 不存在/读不到返回 def
+// ConfigInt reads a DWORD config value; returns def if missing/unreadable.
 func ConfigInt(name string, def int) int {
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, ConfigKeyPath, registry.QUERY_VALUE)
 	if err != nil {
@@ -32,7 +33,8 @@ func ConfigInt(name string, def int) int {
 	return int(v)
 }
 
-// SetConfigInt: 写 DWORD 配置(键不存在自动创建); GUI 策略页用
+// SetConfigInt writes a DWORD config value (key is created if missing);
+// used by the GUI policy page.
 func SetConfigInt(name string, val int) error {
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, ConfigKeyPath, registry.SET_VALUE)
 	if err != nil {
@@ -42,8 +44,11 @@ func SetConfigInt(name string, val int) error {
 	return k.SetDWordValue(name, uint32(val))
 }
 
-// DriverStrategy: 当前驱动运行策略(越界回退用完即卸)。
-// v2.6.1: 已移除"仅部署"(3) — 注册表若残留旧值 3, 一律回到默认"用完即卸"。
+// DriverStrategy returns the current driver runtime strategy
+// (out-of-range values fall back to remove-when-done).
+// v2.6.1: "Deploy-only" (3) was removed — if the registry still carries
+// the legacy value 3, it is always coerced back to the default
+// remove-when-done.
 func DriverStrategy() int {
 	v := ConfigInt("DriverStrategy", DriverStrategyTransient)
 	if v == 3 {
@@ -58,8 +63,8 @@ func DriverStrategy() int {
 	return v
 }
 
-// Gen2RetryPolicy: 失败自动重试次数与间隔分钟。
-// 默认 3 次 / 1 分钟(v3.0.1 起间隔默认 1 分钟)。
+// Gen2RetryPolicy returns the failure-retry count and the interval (minutes).
+// Default: 3 retries / 1 minute (since v3.0.1 the default interval is 1 minute).
 func Gen2RetryPolicy() (count, intervalMin int) {
 	count = configIntClamped("Gen2RetryCount", 3, 0, 12)
 	intervalMin = configIntClamped("Gen2RetryIntervalMin", 1, 1, 240)
@@ -77,9 +82,11 @@ func configIntClamped(name string, def, min, max int) int {
 	return v
 }
 
-// DeleteConfig: 卸载时删除整个策略键 (HKLM\SOFTWARE\50HXUnlock)。
-// 键不存在视为成功(卸载幂等); 删除后重装即回到全部默认值,
-// 避免"曾设常驻/改过重试 → 卸载重装后仍继承旧策略"的状态残留。
+// DeleteConfig removes the entire policy key (HKLM\SOFTWARE\50HXUnlock)
+// on uninstall. A missing key counts as success (idempotent uninstall);
+// after deletion, a reinstall returns to all defaults, avoiding
+// stale-state carry-over such as "used to be resident/changed retry →
+// still inherits the old policy after reinstall".
 func DeleteConfig() {
 	registry.DeleteKey(registry.LOCAL_MACHINE, ConfigKeyPath)
 }
