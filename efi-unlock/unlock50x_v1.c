@@ -6297,6 +6297,49 @@ static UINT32 u40x_pci_rbdf(UINTN bus, UINTN dev, UINTN fn, UINTN off, INTN enc)
     return v;
 }
 
+/* v1.60: 16-bit CF8 config write (LNKCTL2/LNKCTL are word registers; a
+ * dword write would also touch RW1C neighbors). CF8 word accesses work
+ * when the register offset is 2-aligned, which the PCIe caps satisfy. */
+static UINT32 u40x_pci_w16(UINTN bus, UINTN dev, UINTN fn, UINTN off, UINT16 val)
+{
+    UINT32 a = 0x80000000u | ((UINT32)bus << 16) |
+               ((UINT32)dev << 11) | ((UINT32)fn << 8) | ((UINT32)off & 0xFCu);
+    UINT16 port = (UINT16)(0xCFC + (off & 2));
+    __asm__ __volatile__("outl %0, %w1" : : "a"(a), "Nd"(0xCF8));
+    __asm__ __volatile__("outw %0, %w1" : : "a"(val), "Nd"(port));
+    /* readback (word) */
+    __asm__ __volatile__("inw %w1, %0" : "=a"(val) : "Nd"(port));
+    return val;
+}
+
+static UINT32 u40x_pci_r16(UINTN bus, UINTN dev, UINTN fn, UINTN off)
+{
+    UINT32 a = 0x80000000u | ((UINT32)bus << 16) |
+               ((UINT32)dev << 11) | ((UINT32)fn << 8) | ((UINT32)off & 0xFCu);
+    UINT16 port = (UINT16)(0xCFC + (off & 2));
+    UINT16 val = 0xFFFF;
+    __asm__ __volatile__("outl %0, %w1" : : "a"(a), "Nd"(0xCF8));
+    __asm__ __volatile__("inw %w1, %0" : "=a"(val) : "Nd"(port));
+    return val;
+}
+
+/* v1.60: locate the PCIe capability (id 0x10) in config space */
+static UINT32 u40x_pcie_cap(UINTN bus, UINTN dev, UINTN fn, INTN enc)
+{
+    UINT32 cur = u40x_pci_rbdf(bus, dev, fn, 0x34, enc) & 0xFF;
+    UINTN i;
+    for (i = 0; i < 20; i++) {
+        UINT32 c;
+        if (cur < 0x40 || cur > 0xFC)
+            return 0;
+        c = u40x_pci_rbdf(bus, dev, fn, cur & 0xFC, enc);
+        if ((c & 0xFF) == 0x10)
+            return cur & 0xFC;
+        cur = (c >> 8) & 0xFF;
+    }
+    return 0;
+}
+
 static void u40x_pci_wbdf(UINTN bus, UINTN dev, UINTN fn, UINTN off,
                           UINT32 val, INTN enc)
 {
@@ -6787,6 +6830,83 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     for (i = 0; i < 16; i++) mmio_read32(SEC2_ENGINE);
     mmio_write32(SEC2_ENGINE, 0x0);
     for (i = 0; i < 16; i++) mmio_read32(SEC2_ENGINE);
+
+    /* ---------- [10.5] v1.60: PCIe Gen2 (port of kernel patch 04) ----------
+     * The kernel patch runs this AFTER GSP sets its policy, inside the
+     * driver. Here it runs pre-OS instead, and the open question this run
+     * answers is whether a pre-OS trained Gen2 link survives the OS driver
+     * boot (the 40HX Windows tool needed per-logon Gen2 because their
+     * driver rewrote the policy within milliseconds). Sequence as proved
+     * on this host by patch 04: XVE override -> TLS=5GT/s on both ends ->
+     * one retrain pulse on the root port -> poll LNKSTA. Failure leaves
+     * the link at Gen1, which is harmless. */
+    if (u40x_enc_found == 2) {
+        UINTN d2, f2, rd = 0, rf = 0;
+        UINT32 gpuCap = u40x_pcie_cap(gBus, gDev, gFn, 2);
+        UINT32 rootCap = 0;
+        UINT32 v32;
+        for (d2 = 0; d2 < 32 && !rootCap; d2++) {
+            for (f2 = 0; f2 < 8; f2++) {
+                if (((u40x_pci_rbdf(0, d2, f2, 0x08, 2) >> 16) & 0xFFFFu)
+                        != 0x0604u)
+                    continue;   /* only PCI-to-PCI bridges */
+                if (((u40x_pci_rbdf(0, d2, f2, 0x18, 2) >> 8) & 0xFFu) == gBus) {
+                    rootCap = u40x_pcie_cap(0, d2, f2, 2);
+                    if (rootCap) {
+                        rd = d2;
+                        rf = f2;
+                        break;
+                    }
+                }
+            }
+        }
+        v32 = (gpuCap ? u40x_pci_r16(gBus, gDev, gFn, gpuCap + 0x12) : 0xFFFF);
+        Print(L"[gen2] gpuCap=0x%x rootCap=0x%x lncap=0x%08x lstat=0x%04x "
+              L"(cls=%d)\n",
+              gpuCap, rootCap,
+              (gpuCap ? u40x_pci_rbdf(gBus, gDev, gFn, gpuCap + 0x0C, 2) : 0),
+              v32 & 0xFFFF, v32 & 0xF);
+        if (gpuCap && rootCap) {
+            UINT32 attempt;
+            /* 1. XVE override — the only BAR0 write patch 04 makes */
+            mmio_write32(gBar0Base + 0x8872c, 6);
+            (void)mmio_read32(gBar0Base + 0x8872c);
+            BS->Stall(50000);
+            /* 2. LNKCTL2 TLS = 5GT/s on both ends (RMW, word) */
+            u40x_pci_w16(gBus, gDev, gFn, gpuCap + 0x30,
+                         (UINT16)((u40x_pci_r16(gBus, gDev, gFn, gpuCap + 0x30)
+                                   & 0xFFF0) | 2));
+            u40x_pci_w16(0, rd, rf, rootCap + 0x30,
+                         (UINT16)((u40x_pci_r16(0, rd, rf, rootCap + 0x30)
+                                   & 0xFFF0) | 2));
+            Print(L"[gen2] TLS set: gpu=0x%04x root=0x%04x\n",
+                  u40x_pci_r16(gBus, gDev, gFn, gpuCap + 0x30) & 0xFFFF,
+                  u40x_pci_r16(0, rd, rf, rootCap + 0x30) & 0xFFFF);
+            /* 3. retrain pulse on the root port (LNKCTL bit5, self-clear) */
+            u40x_pci_w16(0, rd, rf, rootCap + 0x10,
+                         (UINT16)(u40x_pci_r16(0, rd, rf, rootCap + 0x10)
+                                  | 0x20));
+            /* 4. poll LNKSTA up to 2 s for >= 5GT/s (cls >= 2) */
+            for (attempt = 0; attempt < 20; attempt++) {
+                BS->Stall(100000);
+                v32 = u40x_pci_r16(gBus, gDev, gFn, gpuCap + 0x12) & 0xFFFF;
+                if ((v32 & 0xF) >= 2) {
+                    Print(L"[gen2] *** TRAINED Gen%d (width %d) after %d00ms "
+                          L"***\n", v32 & 0xF, (v32 >> 4) & 0x3F, attempt + 1);
+                    break;
+                }
+            }
+            if (attempt >= 20)
+                Print(L"[gen2] still Gen%d after 2s (cls=%d width=%d) — "
+                      L"harmless, OS-side Gen2 needed\n",
+                      v32 & 0xF, v32 & 0xF, (v32 >> 4) & 0x3F);
+        } else {
+            Print(L"[gen2] capability not found — skipped\n");
+        }
+    } else {
+        Print(L"[gen2] enc=%d (non-CF8) — skipped in v1.60\n",
+              (INTN)u40x_enc_found);
+    }
 
 done:
     dump_regs(L"[v55 final]");

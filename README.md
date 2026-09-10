@@ -9,6 +9,30 @@ developed and proven here; the 90HX path is a port of the rejoin16 work by
 built on the [pearlfortune/cmpunlocker](https://github.com/pearlfortune/cmpunlocker)
 v0.1.28 90hx-stockflow bundle.
 
+## One-click install
+
+Grab the latest from [GitHub Releases](../../releases/latest) — one file
+per OS, one command to unlock:
+
+| OS | Download | Install (one command) |
+|---|---|---|
+| **Linux** | `cmp50hx-unlock-linux.run` | `chmod +x cmp50hx-unlock-linux.run && sudo ./cmp50hx-unlock-linux.run` |
+| **Windows** | `cmp50hx-unlock-windows.zip` | unzip, right-click `50HXInstaller.exe` → *Run as administrator* → *Install* |
+
+Both bundles ship the same UEFI compute unlock (proven live, FP32 31.7×
+and DP4A 28.4× over the locked stock driver — see [A/B matrix](efi-unlock/runs/20260910-ab-stock-vs-efi.md))
+plus a Gen2 PCIe unlock. **No kernel patches required.** On Windows the
+installer also enables `EnableGpuFirmware=1` so the EFI state survives
+into the OS driver. On Linux the one-click `.run` builds and installs the
+patched kernel module automatically; it is the equivalent path but
+required only if you want the patched kernel module too (the UEFI unlock
+itself works with the stock module).
+
+To build the bundles yourself: `make release` (Linux + Windows
+toolchain needed — see `Makefile`).
+
+
+
 ## UEFI compute unlock (working, no kernel patches needed)
 
 [`efi-unlock/`](efi-unlock/README.md) is a port of the
