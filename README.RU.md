@@ -114,6 +114,28 @@ sudo /opt/cmp50hx-unlock/cmp90hx/verify.sh    # PASS_CMP90HX_ALL_LIVE
   скорость SM/Tensor, BAR1 размером 16 ГиБ и PCIe Gen2 (см.
   [`docs/CMP50HX.md`](docs/CMP50HX.md)).
 
+## UEFI-разблокировка вычислений (работает, патчи ядра не нужны)
+
+[`efi-unlock/`](efi-unlock/README.md) — перенос UEFI-приложения
+[CMP40HX-Unlock](https://github.com/PZH1gdmu/CMP40HX-Unlock) v3.0.0 (MIT)
+на 50HX. Приложение открывает SS0/SS1 **до загрузки ОС** тем же эксплойтом
+V67 canary/Booter, что и stockflow, а затем передаёт управление загрузчику
+Linux без единого POST — поэтому для разблокировки вычислений **не нужен
+патченный модуль ядра вообще**.
+
+Доказано на живом железе 2026-09-10 (хост .224): эксплойт срабатывает
+(`*** UNLOCKED (SS0=0x88888888 SS1=0x8) ***`), состояние доживает до Linux
+без единого Xid, а A/B-тест на **стоковом, непатченном** драйвере 610.43.03
+дал FP32 0.427 → **13.512 TFLOP/s (31.7x)** и DP4A 1.689 → **47.984 TIOP/s
+(28.4x)** против залоченного базлайна — GSP-загрузка стокового драйвера
+принимает pre-OS-состояние без ошибок. Полная матрица:
+[`efi-unlock/runs/20260910-ab-stock-vs-efi.md`](efi-unlock/runs/20260910-ab-stock-vs-efi.md).
+
+ReBAR, Gen2 и отчёт 56 RT-ядер остаются за патчами ядра (таблица
+возможностей — в README каталога). Инструкция по установке, требования к
+прошивке, проверка и откат:
+[`efi-unlock/README.md`](efi-unlock/README.md) (англ.).
+
 ## Необязательный userspace-патч pipeline bind
 
 Каталог [`userspace-patch/`](userspace-patch/README.md) создаёт отдельную
