@@ -114,11 +114,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # Resolve $GITHUB_WORKSPACE to a canonical absolute path. Some
-          # windows-2022 runners set the env var with a doubled trailing
-          # segment that breaks Push-Location; Resolve-Path catches that.
-          $Root = (Resolve-Path $env:GITHUB_WORKSPACE).Path
-          Write-Output "GITHUB_WORKSPACE = $Root"
+          # Some windows-2022 runners set $GITHUB_WORKSPACE with a doubled
+          # trailing segment (e.g. 'D:\a\<repo>\<repo>'). Strip it by
+          # always pointing to the parent if the last segment equals the
+          # parent's last segment. Then verify everything exists.
+          $gw = $env:GITHUB_WORKSPACE
+          $parent = Split-Path -Parent $gw
+          $leaf    = Split-Path -Leaf  $gw
+          if ($parent -and (Split-Path -Leaf $parent) -eq $leaf -and (Test-Path (Join-Path $parent $leaf))) {
+              $Root = $parent
+          } else {
+              $Root = $gw
+          }
+          Write-Output "GITHUB_WORKSPACE = $gw"
+          Write-Output "Root           = $Root"
           $Stage = Join-Path $Root 'artifacts\windows-stage'
           New-Item -ItemType Directory -Force -Path $Stage | Out-Null
           Push-Location (Join-Path $Root 'tools\winres_gen')
