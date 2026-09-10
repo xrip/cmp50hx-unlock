@@ -7,40 +7,35 @@ kernel module required for the unlock itself. It is a port of the
 `unlock40x_v70.c` (MIT) to the 50HX; their MIT license text is kept in
 `LICENSE-40HX-UNLOCK`.
 
-Status: **built, QEMU-validated, and live-tested on the .224 host through six
-BootNext cycles (2026-09-09/10).** The application itself is proven on real
-hardware: it finds the card (CF8 fallback, `04:00.0`), enables BAR0, dumps the
-PROM, reads BOOT0 = `0x162000a1` (TU102 chipId confirmed live), builds the
-fake WPR meta above 4 GB, runs the SEC2 sanitize, and chainloads the Ubuntu
-shim with no POST — Linux comes up healthy with zero Xid every time. The
-exploit itself has not fired yet: the FWSEC-on-GSP precondition (generic-BL
-WITH_LOADER boot) halts before its DMA — see "Current blocker" below.
-Rollback is trivial: BootOrder keeps `50HX Unlock` last; only the one-shot
-BootNext invokes it.
+Status: **WORKING — the exploit fires end-to-end on live hardware**
+(.224 host, 2026-09-10). One BootNext cycle unlocks SS0/SS1 pre-OS, the
+FWSEC/WPR2 state survives the no-POST chainload into Linux, and the kernel
+module boots on top with zero Xid. See "Result" below for the live evidence
+and the final root cause of the debugging trail.
 
-## Current blocker (live-log evidence, 2026-09-10)
+## Result: UNLOCKED (live, 2026-09-10)
 
-The FWSEC fallback path ([8b], needed because WPR2 is down at pre-OS time on
-this host) stops at the generic-BL step. Verified-correct so far:
+The exploit fires end-to-end on the .224 host. ESP log ends with
+`*** UNLOCKED (SS0=0x88888888 SS1=0x8) ***`, the SEC2 sanitize is clean, and
+Linux boots through the no-POST chainload with zero Xid. The kernel module's
+own boot log then confirms the EFI state survived into the OS:
+`POST_FWSEC_PRE_GSP_ENTRY WPR=027fee00:027fe000 FECS=ffffff8f` — the driver
+finds WPR2 already latched by the EFI's FWSEC and a stock-restored PLM.
 
-- BL image byte-identical to the driver bindata (`blStartTag=0xfd`,
-  `blCodeSize=0x200`); BL written at IMEM top (dst=0xfe00), tagged 0xfd,
-  `BOOTVEC=0xfd00` — exactly the `s_setupLoader` semantics;
-- BL DMEM DESC present in DMEM (live readback: ctxDma=4, codeDma
-  `0x11982c000`, data `0x119835a00`/0x3f0), layout matches
-  `RM_FLCN_BL_DMEM_DESC`;
-- aperture: `TRANSCFG(4)=0x15` (COHERENT_SYSMEM|MEM_TYPE_PHYSICAL),
-  `FBIF_CTL` ALLOW_PHYS_NO_CTX, `DMACTL=0` (`kflcnDisableCtxReq`
-  equivalents).
+The final root cause of the earlier BL halt was a build bug, not silicon:
+`objcopy` derives binary symbol names from the filename **as given**, so
+passing `blobs/<file>` produced `_binary_blobs_..._start` symbols while the
+redefines targeted `_binary_..._start` — a no-op. Every C extern
+(`v67_payload_bin`, `booter_ucode_prod`, `fwsec_50hx_prod_bin`, …) stayed
+undefined, resolved to address 0 in the PE, and all payloads were copied
+from zero. Every falcon ran zero-filled code (hence the instant BL halt and
+the all-zero interface reads). `build.sh` now runs objcopy from `blobs/`
+with a bare filename and asserts each target symbol is defined.
 
-After STARTCPU the core reports `cpuctl=0x10` with the HALT IRQ latched,
-mbox0/1 = 0, and no FWSEC bytes ever land in IMEM 0 — the BL halts
-before/without its DMA. The RISC-V trace ring stays empty (falcon-mode core,
-no trace). Next leads: verify the STARTCPU write physically reaches CPUCTL
-(write-read latency test), compare the GSP reset state with `kflcnResetHw`,
-and try `CPUCTL_ALIAS`. The SEC2 Booter paths ([9]) still need the same
-WPR2/FWSEC precondition (they run but never complete — matching the 40HX
-log53 finding that FWSEC/WPR2-up is required before the Booter transaction).
+Debugging trail that led there (all fixes retained): `.reloc` omission,
+SysV/MS-ABI wrapper+EFIAPI issues, 57 unwrapped protocol calls, the 0-byte
+log writer, `TRANSCFG=0x15` (MEM_TYPE_PHYSICAL), driver-faithful BL
+tag/BOOTVEC semantics, and live diagnostics (desc readback, register dumps).
 
 ## Mechanism
 

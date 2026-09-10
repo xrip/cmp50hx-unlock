@@ -35,14 +35,23 @@ echo "=== 2. embed blobs ==="
 # Debian/Ubuntu gnu-efi archives hold ELF objects, so the whole link is ELF
 # (crt0 + elf_x86_64_efi.lds) and the blob objects must be ELF too.
 embed() {
-  local f="blobs/$1" tgt="$2"
-  local base="${1//./_}"
-  objcopy --input-target binary --output-target elf64-x86-64 \
-    --binary-architecture i386:x86-64 \
-    --redefine-sym "_binary_${base}_start=${tgt}" \
-    --redefine-sym "_binary_${base}_end=${tgt}_end" \
-    --redefine-sym "_binary_${base}_size=${tgt}_size" \
-    "$f" "${tgt}.o"
+  local f="$1" tgt="$2"
+  local base="${f//./_}"
+  # objcopy derives the symbol name from the FILENAME AS GIVEN, so run it
+  # from blobs/ with a bare name; otherwise the symbols carry a "blobs_"
+  # prefix, the redefines below become no-ops, and the C externs resolve
+  # to zero at runtime (the live 2026-09-10 failure: all payloads were
+  # copied from address 0 and every falcon ran zero-filled code).
+  ( cd blobs && objcopy --input-target binary --output-target elf64-x86-64 \
+      --binary-architecture i386:x86-64 \
+      --redefine-sym "_binary_${base}_start=${tgt}" \
+      --redefine-sym "_binary_${base}_end=${tgt}_end" \
+      --redefine-sym "_binary_${base}_size=${tgt}_size" \
+      "$f" "../${tgt}.o" )
+  if ! nm "${tgt}.o" | grep -qE "^[0-9a-f]+ [A-Za-z] ${tgt}$"; then
+    echo "  EMBED FAILED for $f (symbol ${tgt} not defined)" >&2
+    exit 1
+  fi
   echo "  embedded $f -> ${tgt}"
 }
 embed v67_payload.bin         v67_payload_bin
