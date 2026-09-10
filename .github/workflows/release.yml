@@ -41,14 +41,14 @@ jobs:
           set -e
           cd "$GITHUB_WORKSPACE"
           mkdir -p cache artifacts
-          # build.sh compiles and populates the vendor cache on first run;
-          # never installs, never touches initramfs, no root needed.
+          # build.sh reads the artifact dir from $CMP_UNLOCK_ARTIFACT_DIR
+          # (no flag); produces artifacts/<driver>-<kernel>/nvidia.ko et al.
           sudo apt-get install -y build-essential gnu-efi
-          ./build.sh --source-tarball cache/610.43.03.tar.gz \
-                     --artifacts-dir artifacts \
+          export CMP_UNLOCK_ARTIFACT_DIR="$GITHUB_WORKSPACE/artifacts"
+          ./build.sh --source-tarball "$GITHUB_WORKSPACE/cache/610.43.03.tar.gz" \
                      --card cmp50hx
           ( cd efi-unlock && ./build.sh )
-          ls -la artifacts/*/*/nvidia.ko 2>/dev/null | head
+          find artifacts -maxdepth 4 -name 'nvidia.ko' | head
           ls -la efi-unlock/50HXUNLK.EFI
 
       - name: Compose Linux release payload (tar.gz)
@@ -112,29 +112,42 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cd "$env:GITHUB_WORKSPACE"
-          New-Item -ItemType Directory -Force -Path artifacts\windows-stage | Out-Null
-          # 1. winres_gen → rsrc_windows_amd64.syso
-          Push-Location tools\winres_gen
-          go build -o ..\..\artifacts\windows-stage\winres_gen.exe .
-          Pop-Location
-          ./artifacts/windows-stage/winres_gen.exe -o tools\inst50hx\rsrc_windows_amd64.syso
-          # 2. three Go tools (the existing -ldflags="-H=windowsgui -s -w" cmdline)
-          Push-Location tools\inst50hx
-          go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o ..\..\artifacts\windows-stage\50HXInstaller.exe .
-          Pop-Location
-          Push-Location tools\uninstall50x
-          go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o ..\..\artifacts\windows-stage\50HXUninstaller.exe .
-          Pop-Location
-          Push-Location tools\check50x
-          go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o ..\..\artifacts\windows-stage\50HXCheck.exe .
-          Pop-Location
-          Copy-Item gen2\* -Destination artifacts\windows-stage\ -Recurse -Force
-          Copy-Item efi-unlock-windows\README.md -Destination artifacts\windows-stage\README.md
-          Copy-Item CMP40HX-Unlock\LICENSE -Destination artifacts\windows-stage\LICENSE -ErrorAction SilentlyContinue
-          Copy-Item LICENSE -Destination artifacts\windows-stage\repo-LICENSE -ErrorAction SilentlyContinue
-          Get-ChildItem artifacts\windows-stage
-          $hash = (Get-FileHash artifacts\windows-stage\50HXInstaller.exe -Algorithm SHA256).Hash
+          # Use absolute paths; on windows-2022 the runner's CWD differs
+          # from $GITHUB_WORKSPACE and Push-Location can fail otherwise.
+          $Root = $env:GITHUB_WORKSPACE
+          $Stage = Join-Path $Root 'artifacts\windows-stage'
+          New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+          Push-Location (Join-Path $Root 'tools\winres_gen')
+          try { go build -o (Join-Path $Stage 'winres_gen.exe') . }
+          finally { Pop-Location }
+          & (Join-Path $Stage 'winres_gen.exe') -o (Join-Path $Root 'tools\inst50hx\rsrc_windows_amd64.syso')
+          foreach ($t in @(
+              @{ Name = '50HXInstaller.exe';   Dir = 'tools\inst50hx' },
+              @{ Name = '50HXUninstaller.exe'; Dir = 'tools\uninstall50x' },
+              @{ Name = '50HXCheck.exe';       Dir = 'tools\check50x' }
+          )) {
+              Push-Location (Join-Path $Root $t.Dir)
+              try { go build -a -trimpath -ldflags="-H=windowsgui -s -w" -o (Join-Path $Stage $t.Name) . }
+              finally { Pop-Location }
+          }
+          Copy-Item -Recurse -Force (Join-Path $Root 'gen2\*') $Stage
+          if (Test-Path (Join-Path $Root 'efi-unlock-windows\README.md')) {
+              Copy-Item -Force (Join-Path $Root 'efi-unlock-windows\README.md') (Join-Path $Stage 'README.md')
+          }
+          if (Test-Path (Join-Path $Root 'efi-unlock\50HXUNLK.EFI')) {
+              Copy-Item -Force (Join-Path $Root 'efi-unlock\50HXUNLK.EFI') (Join-Path $Stage '50HXUNLK.EFI')
+          }
+          foreach ($name in 'LICENSE') {
+              foreach ($dir in @('CMP40HX-Unlock','.')) {
+                  $p = Join-Path $Root "$dir/$name"
+                  if (Test-Path $p) {
+                      Copy-Item -Force $p (Join-Path $Stage "LICENSE-$dir")
+                      break
+                  }
+              }
+          }
+          Get-ChildItem $Stage | Format-Table Name,Length
+          $hash = (Get-FileHash (Join-Path $Stage '50HXInstaller.exe') -Algorithm SHA256).Hash
           Write-Output "50HXInstaller.exe sha256: $hash"
 
       - name: Compose Windows ZIP
