@@ -74,18 +74,46 @@ jobs:
             cmp50hx-unlock-linux.tar.gz
             cmp50hx-unlock-linux.tar.gz.sha256
 
+      - name: Upload the EFI binary for the Windows job
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmp50hx-efi
+          path: efi-unlock/50HXUNLK.EFI
+
   # -------------------------------------------------------------------
   # Windows: build the three Go tools (they embed the EFI binary from
   # efi-unlock-windows/tools/inst50hx/embed/) and bundle the BYOVD
   # Gen2 runtime into a ZIP.
   # -------------------------------------------------------------------
   windows:
+    needs: linux
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+
+      # Single source of truth: the EFI binary is built by the Linux
+      # job from efi-unlock/unlock50x_v1.c. We download it here and
+      # overwrite the pre-committed embed *before* the Go build so the
+      # Windows installer ships the same EFI as the Linux release.
+      # The embed copy in the repo is only used for local Windows
+      # builds outside this workflow.
+      - name: Download the EFI binary built by the Linux job
+        uses: actions/download-artifact@v4
+        with:
+          name: cmp50hx-efi
+          path: efi-unlock/50HXUNLK.EFI
+
+      - name: Sync EFI into the Go embed path
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $W = $env:GITHUB_WORKSPACE
+          $Tools = Join-Path $W 'efi-unlock-windows\tools'
+          Copy-Item -Force (Join-Path $W 'efi-unlock\50HXUNLK.EFI') `
+                    (Join-Path $Tools 'inst50hx\embed\50HXUNLK.EFI')
 
       - name: Build the Go tools
         shell: pwsh
