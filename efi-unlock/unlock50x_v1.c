@@ -6392,6 +6392,33 @@ static void u40x_pci_wbdf(UINTN bus, UINTN dev, UINTN fn, UINTN off,
  * 的后续config读必须沿用同一encode，否则在非specificationfirmware上会读错device。 */
 static INTN u40x_enc_found = 0;
 
+/* issue #24: on AGESA / Ryzen APU boards the spec/compact RootBridgeIo
+ * paths corrupt the stack (AGESA bug on unmodelled Type-0 devices —
+ * typically the APU iGPU on bus 0), and the root-port retrain pulse
+ * hangs because the relink tries to retrain the iGPU link too.
+ * Detect via CF8 only — the detection itself must not use the
+ * unsafe RootBridgeIo path. */
+static BOOLEAN g_ryzenApu = FALSE;
+
+static BOOLEAN u40x_is_ryzen_apu(void)
+{
+    UINTN d, f;
+    for (d = 0; d < 32; d++) {
+        for (f = 0; f < 8; f++) {
+            UINT32 id = u40x_pci_rbdf(0, d, f, 0, 2);
+            UINT32 cc;
+            if (id == 0xFFFFFFFFu || (id & 0xFFFFu) == 0u)
+                continue;
+            if ((id & 0xFFFFu) != 0x1022u)       /* AMD vendor */
+                continue;
+            cc = u40x_pci_rbdf(0, d, f, 0x08, 2);
+            if (((cc >> 24) & 0xFFu) == 0x03u)   /* class code high byte = VGA */
+                return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 /* 找卡：fast-probe（bus 2/1/3/0/4/5）+ 初扫 bus 0..16（AGESA 实测把
  * PEG 槽编到 bus 0x10、核显到 0x30，0..16 含该极端值）；enc=2(CF8) 全
  * 0..255 兜底。先specificationaddress(enc=0)再紧凑address(enc=1)再 CF8(enc=2)。 */
@@ -6451,6 +6478,11 @@ static int u40x_find_gpu(void)
     UINTN N = 0, i;
     EFI_STATUS st;
 
+    g_ryzenApu = u40x_is_ryzen_apu();
+    if (g_ryzenApu)
+        Print(L"[50HX f] Ryzen APU detected (AMD iGPU on bus 0) — "
+              L"skipping enc=0,1 (AGESA RootBridgeIo unsafe)\n");
+
     st = uefi_call_wrapper(BS->LocateHandleBuffer, 5, ByProtocol,
             &gEfiPciRootBridgeIoProtocolGuid, NULL, &N, &H);
     if (EFI_ERROR(st)) {
@@ -6467,6 +6499,9 @@ static int u40x_find_gpu(void)
         if (EFI_ERROR(st) || !rb)
             continue;
         gRb = rb;
+        /* issue #24: skip RootBridgeIo, go straight to CF8 below */
+        if (g_ryzenApu)
+            break;
         if (u40x_find_gpu_pass(0)) { uefi_call_wrapper(BS->FreePool, 1, H); return 1; }
         if (u40x_find_gpu_pass(1)) { uefi_call_wrapper(BS->FreePool, 1, H); return 1; }
     }
@@ -6903,6 +6938,13 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
               v32 & 0xFFFF, v32 & 0xF);
         if (gpuCap && rootCap) {
             UINT32 attempt;
+            /* issue #24: root port also serves the iGPU; retrain would
+             * relink it too and AGESA doesn't recover */
+            if (g_ryzenApu) {
+                Print(L"[gen2] Ryzen APU: skipping retrain (root port also "
+                      L"serves iGPU, OS-side Gen2 needed)\n");
+                goto done;
+            }
             /* 1. XVE override — the only BAR0 write patch 04 makes */
             mmio_write32(gBar0Base + 0x8872c, 6);
             (void)mmio_read32(gBar0Base + 0x8872c);
