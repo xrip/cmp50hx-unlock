@@ -6394,26 +6394,41 @@ static INTN u40x_enc_found = 0;
 
 /* issue #24: on AGESA / Ryzen APU boards the spec/compact RootBridgeIo
  * paths corrupt the stack (AGESA bug on unmodelled Type-0 devices —
- * typically the APU iGPU on bus 0), and the root-port retrain pulse
- * hangs because the relink tries to retrain the iGPU link too.
+ * typically the APU iGPU), and the root-port retrain pulse hangs
+ * because the relink tries to retrain the iGPU link too.
  * Detect via CF8 only — the detection itself must not use the
- * unsafe RootBridgeIo path. */
+ * unsafe RootBridgeIo path.
+ *
+ * AGESA can place the iGPU at any bus up to 0x30+ (see comment on
+ * u40x_find_gpu_pass); v1.1.1 only scanned bus 0 and missed hosts
+ * where the iGPU lives elsewhere. v1.1.2 scans all 256 buses with
+ * an early exit on non-AMD host bridge. */
 static BOOLEAN g_ryzenApu = FALSE;
 
 static BOOLEAN u40x_is_ryzen_apu(void)
 {
-    UINTN d, f;
-    for (d = 0; d < 32; d++) {
-        for (f = 0; f < 8; f++) {
-            UINT32 id = u40x_pci_rbdf(0, d, f, 0, 2);
-            UINT32 cc;
-            if (id == 0xFFFFFFFFu || (id & 0xFFFFu) == 0u)
-                continue;
-            if ((id & 0xFFFFu) != 0x1022u)       /* AMD vendor */
-                continue;
-            cc = u40x_pci_rbdf(0, d, f, 0x08, 2);
-            if (((cc >> 24) & 0xFFu) == 0x03u)   /* class code high byte = VGA */
-                return TRUE;
+    UINTN bus, d, f;
+    /* Fast path: if the host bridge (bus 0 dev 0) isn't AMD, skip the scan. */
+    UINT32 hb = u40x_pci_rbdf(0, 0, 0, 0, 2);
+    if (hb == 0xFFFFFFFFu || (hb & 0xFFFFu) != 0x1022u)
+        return FALSE;
+    /* AMD system: scan all buses for an AMD iGPU (vendor 0x1022,
+     * class 0x03 = display). Audio (class 0x04) is the iGPU's HDA
+     * function; covered implicitly because the iGPU is usually
+     * present alongside it. */
+    for (bus = 0; bus < 256; bus++) {
+        for (d = 0; d < 32; d++) {
+            for (f = 0; f < 8; f++) {
+                UINT32 id = u40x_pci_rbdf(bus, d, f, 0, 2);
+                UINT32 cc;
+                if (id == 0xFFFFFFFFu || (id & 0xFFFFu) == 0u)
+                    continue;
+                if ((id & 0xFFFFu) != 0x1022u)
+                    continue;
+                cc = u40x_pci_rbdf(bus, d, f, 0x08, 2);
+                if (((cc >> 24) & 0xFFu) == 0x03u)
+                    return TRUE;
+            }
         }
     }
     return FALSE;
