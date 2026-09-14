@@ -1,7 +1,12 @@
-# Single source of truth for the EFI lives at efi-unlock/50HXUNLK.EFI.
+# Single source of truth:
+#   EFI binary:    efi-unlock/50HXUNLK.EFI
+#   BYOVD drivers: efi-unlock-windows/gen2/drivers/ThrottleStop.sys
+#                  efi-unlock-windows/gen2/drivers/WinRing0x64.sys
 # tools/build-windows.ps1 (local) and .github/workflows/release.yml (CI)
-# copy it into this directory before the Go build so //go:embed picks it up.
-# Tracking it here would let the binary drift from the C source again
-# (last happened with v1.1.1/v1.1.2/v1.1.3 — Windows release shipped a
-# pre-fix EFI while Linux shipped the post-fix one).
+# copy all three into this directory before the Go build so //go:embed
+# picks them up. Tracking them here would let the binaries drift from the
+# C source / repo again (last happened with v1.1.1/v1.1.2/v1.1.3 — Windows
+# release shipped a pre-fix EFI while Linux shipped the post-fix one).
 50HXUNLK.EFI
+ThrottleStop.sys
+WinRing0x64.sys

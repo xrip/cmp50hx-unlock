@@ -34,11 +34,14 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 try {
     if (-not $SkipGo) {
-        # 0. Sync the EFI binary into the Go embed path so `//go:embed embed/*`
-        #    picks up the current source build. The embed file is not tracked
-        #    in git (.gitignore) — only efi-unlock/50HXUNLK.EFI is the source
-        #    of truth. Without this step `go build` would fail with "no
-        #    matching files found" on a fresh checkout.
+        # 0. Sync the EFI binary + BYOVD drivers into the Go embed path
+        #    so `//go:embed embed/*` picks them up. The embed dir is not
+        #    tracked in git (.gitignore) — efi-unlock/50HXUNLK.EFI and
+        #    efi-unlock-windows/gen2/drivers/*.{sys} are the sources of
+        #    truth. Without this step `go build` would fail with "no
+        #    matching files found" or — if only the EFI is missing — the
+        #    resulting installer would silently ship with no embedded
+        #    payload (the long-standing issue #24 driver copy failures).
         $efiSrc = Join-Path $Source 'efi-unlock/50HXUNLK.EFI'
         if (-not (Test-Path $efiSrc)) {
             throw "missing efi-unlock/50HXUNLK.EFI - run 'bash efi-unlock/build.sh' first"
@@ -48,6 +51,25 @@ try {
         Copy-Item -Force $efiSrc (Join-Path $embedDir '50HXUNLK.EFI')
         $hash = (Get-FileHash $efiSrc -Algorithm SHA256).Hash
         Write-Host ">> synced embed EFI sha256: $hash" -ForegroundColor Cyan
+
+        # Sync BYOVD drivers (ThrottleStop.sys + WinRing0x64.sys). These
+        # live in efi-unlock-windows/gen2/drivers/ in source and need to
+        # be at the top level of inst50hx/embed/ for `//go:embed embed/*`
+        # to match — Go's `embed/*` does not recurse into subdirs by
+        # default, and the Go code reads them as "embed/<filename>".
+        $drvSrc = Join-Path $Source 'efi-unlock-windows/gen2/drivers'
+        if (-not (Test-Path $drvSrc)) {
+            throw "missing efi-unlock-windows/gen2/drivers/ (BYOVD runtime)"
+        }
+        foreach ($drv in 'ThrottleStop.sys', 'WinRing0x64.sys') {
+            $src = Join-Path $drvSrc $drv
+            if (-not (Test-Path $src)) {
+                throw "missing $src (BYOVD runtime)"
+            }
+            Copy-Item -Force $src (Join-Path $embedDir $drv)
+            $drvHash = (Get-FileHash $src -Algorithm SHA256).Hash
+            Write-Host ">> synced embed $drv sha256: $drvHash" -ForegroundColor Cyan
+        }
 
         # 1. winres_gen (one-shot, generates rsrc_windows_amd64.syso)
         $winresSrc = Join-Path $Source 'tools/winres_gen'
