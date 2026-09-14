@@ -28,6 +28,13 @@ patched kernel module automatically; it is the equivalent path but
 required only if you want the patched kernel module too (the UEFI unlock
 itself works with the stock module).
 
+**AGESA / AMD Ryzen APU hosts (issue #24):** the EFI detects an AMD CPU
+via CPUID and skips the AGESA-unsafe RootBridgeIo paths and the pre-OS
+Gen2 retrain pulse (which would relink the root port that also serves
+the APU's iGPU — AGESA does not recover). The compute unlock still
+runs to completion; OS brings Gen2 up via the Windows BYOVD logon task
+or the Linux `cmp50hx-gen2.service`.
+
 To build the bundles yourself: `make release` (Linux + Windows
 toolchain needed — see `Makefile`). CI ships them automatically: GitHub
 Actions on every `v*` tag (`.github/workflows/release.yml`), and

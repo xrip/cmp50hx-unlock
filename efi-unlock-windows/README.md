@@ -8,8 +8,11 @@ beyond the vendor driver.
 Ported from [PZH1gdmu/CMP40HX-Unlock](https://github.com/PZH1gdmu/CMP40HX-Unlock)
 v3.0.0 (MIT). The Go sources and the BYOVD Gen2 runtime are taken directly
 from that project and renamed 40HX → 50HX; the embedded `50HXUNLK.EFI`
-is the v1 build from `../efi-unlock/` (TU102, hash `68372b03…`,
-proven live on .224).
+is built from `../efi-unlock/unlock50x_v1.c` by the CI Linux job and
+copied into the Go embed directory before the Go build — single source
+of truth, no pre-committed binary in the repo. The hash for any
+tagged release is in the GitHub Release notes; the binary carries the
+same MIT notice from `../efi-unlock/LICENSE-40HX-UNLOCK`.
 
 ## What it does
 
@@ -160,5 +163,5 @@ The Go sources and the BYOVD Gen2 runtime are derived from
 [PZH1gdmu/CMP40HX-Unlock](https://github.com/PZH1gdmu/CMP40HX-Unlock)
 (MIT, Copyright (c) 2026). That license is kept in
 `tools/50hxcore/LICENSE-40HX-UNLOCK` for the runtime pieces; the EFI
-binary in `tools/inst50hx/embed/` carries the same MIT notice from
-the `../efi-unlock/LICENSE-40HX-UNLOCK`.
+binary built from `../efi-unlock/` carries the same MIT notice from
+`../efi-unlock/LICENSE-40HX-UNLOCK`.

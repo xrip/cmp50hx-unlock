@@ -10,6 +10,20 @@ entirely from the ESP once per boot. It is a port of the
 Status: **WORKING — proven live on real hardware and proven against the
 stock driver** (2026-09-10). See "Proof" below.
 
+## Proof
+
+- **2026-09-10, host .224** (X79 / older board): the headline A/B matrix
+  (stock vs EFI, full SM/Tensor speed, ~31.7× FP32 / ~28.4× DP4A).
+- **2026-09-14, host from issue #24** (AGESA / AMD Ryzen APU): same
+  exploit fires, but the EFI detects the APU via CPUID, skips the
+  AGESA-unsafe RootBridgeIo paths and the pre-OS Gen2 retrain (the
+  retrain relinks the root port that also serves the APU's iGPU,
+  which AGESA does not recover from). The unlock itself still runs
+  end-to-end; OS brings Gen2 up via the Windows BYOVD logon task or
+  the Linux `cmp50hx-gen2.service`. See
+  [`../efi-unlock-windows/README.md`](../efi-unlock-windows/README.md)
+  for the Windows-side path.
+
 ## Proof (2026-09-10, host .224)
 
 **One BootNext cycle unlocks the card pre-OS.** The ESP log ends with
@@ -48,8 +62,21 @@ INT32, and memory bandwidth are not clamped).
 | SM/Tensor compute (SS0/SS1) | **yes** | also yes (redundant) |
 | RT-core count report (56) | no | patch 02 |
 | 16 GiB BAR1 ReBAR | no | patch 03 |
-| PCIe Gen2 x4 | no (stays Gen1) | patch 04 |
+| PCIe Gen2 x4 | **yes** (XVE override + LNKCTL2 RMW + retrain pulse) | patch 04 (alternative) |
 | Idle-power governor | no | separate tools |
+
+On AGESA / AMD Ryzen APU hosts the EFI **skips** the Gen2 retrain and the
+spec/compact RootBridgeIo paths: AGESA hides unmodelled Type-0 devices
+(iGPU / audio on bus 0) from `gRb->Pci.Read`, which corrupts the stack
+on probe, and the same root port relinks the iGPU link during retrain
+which AGESA does not recover from. Detection is `u40x_is_ryzen_apu()`
+via CPUID leaf 0 (vendor string `"AuthenticAMD"` = `0x68747541 / 0x69746E65
+/ 0x444D4163`); on detection the EFI falls back to the CF8-only path for
+the GPU find and prints `[gen2] Ryzen APU: skipping retrain (root port
+also serves iGPU, OS-side Gen2 needed)`. The unlock itself (SS0/SS1)
+still completes — only the pre-OS Gen2 retrain is skipped, and the
+OS-side Gen2 task (Windows installer BYOVD logon task, or the Linux
+`cmp50hx-gen2.service`) brings Gen2 up after boot.
 
 The unlock is boot-time state, not a flash: it is re-applied every time the
 application runs and disappears if the GPU is reset. Both paths compose
@@ -64,6 +91,10 @@ Mine*, DOI 10.5281/zenodo.20916112):
 
 1. Find the card (fast probe + bus 0–16 sweep + raw CF8 0–255 fallback;
    accepts only `10de:1e09`; X79 boards need the CF8 path).
+   On AGESA / Ryzen APU boards the spec/compact RootBridgeIo paths
+   (`u40x_find_gpu_pass(0)` and `(1)`) are skipped — AGESA corrupts the
+   stack on unmodelled Type-0 devices (iGPU/audio on bus 0); the CF8
+   sweep is used instead.
 2. Enable BAR0; optional 1 MB VBIOS dump to `\50hx_vbios.bin`.
 3. Wait for GFW, seed PTIMER, allocate all payloads **above 4 GB**.
 4. Build a fake GSP firmware image: dummy FW + radix-3 page table +
@@ -196,8 +227,12 @@ itself never survives a GPU reset anyway).
   defaults. Cold POST with no VBIOS FWSEC keeps the 10 GiB defaults.
 - One card per run: the application unlocks the first `10de:1e09` it
   finds; multi-GPU hosts need an iteration loop (not yet ported).
-- Windows: untested on this card. The 40HX project's Windows recipe
-  additionally requires `EnableGpuFirmware=1` in the driver registry.
+- Windows: covered by [`../efi-unlock-windows/`](../efi-unlock-windows/README.md),
+  which uses the same EFI binary plus a Go installer that deploys it
+  to `\EFI\50HX\50HXUNLK.EFI`, creates the boot entry, sets `BootOrder`
+  first, and sets `EnableGpuFirmware=1` so the EFI state survives into
+  the OS driver. The Windows installer also drives the Gen2 retrain via
+  the BYOVD logon task (`ThrottleStop.sys` + `WinRing0x64.sys`).
 
 ## Blobs (`blobs/`)
 
