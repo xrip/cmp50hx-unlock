@@ -1,0 +1,7 @@
+# Single source of truth for the EFI lives at efi-unlock/50HXUNLK.EFI.
+# tools/build-windows.ps1 (local) and .github/workflows/release.yml (CI)
+# copy it into this directory before the Go build so //go:embed picks it up.
+# Tracking it here would let the binary drift from the C source again
+# (last happened with v1.1.1/v1.1.2/v1.1.3 — Windows release shipped a
+# pre-fix EFI while Linux shipped the post-fix one).
+50HXUNLK.EFI

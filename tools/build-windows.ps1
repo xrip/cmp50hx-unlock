@@ -34,6 +34,21 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 try {
     if (-not $SkipGo) {
+        # 0. Sync the EFI binary into the Go embed path so `//go:embed embed/*`
+        #    picks up the current source build. The embed file is not tracked
+        #    in git (.gitignore) — only efi-unlock/50HXUNLK.EFI is the source
+        #    of truth. Without this step `go build` would fail with "no
+        #    matching files found" on a fresh checkout.
+        $efiSrc = Join-Path $Source 'efi-unlock/50HXUNLK.EFI'
+        if (-not (Test-Path $efiSrc)) {
+            throw "missing efi-unlock/50HXUNLK.EFI - run 'bash efi-unlock/build.sh' first"
+        }
+        $embedDir = Join-Path $Source 'efi-unlock-windows/tools/inst50hx/embed'
+        New-Item -ItemType Directory -Force -Path $embedDir | Out-Null
+        Copy-Item -Force $efiSrc (Join-Path $embedDir '50HXUNLK.EFI')
+        $hash = (Get-FileHash $efiSrc -Algorithm SHA256).Hash
+        Write-Host ">> synced embed EFI sha256: $hash" -ForegroundColor Cyan
+
         # 1. winres_gen (one-shot, generates rsrc_windows_amd64.syso)
         $winresSrc = Join-Path $Source 'tools/winres_gen'
         $winresOut = Join-Path $Stage 'winres_gen.exe'

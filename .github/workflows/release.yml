@@ -112,8 +112,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $W = $env:GITHUB_WORKSPACE
           $Tools = Join-Path $W 'efi-unlock-windows\tools'
+          $EmbedDir = Join-Path $Tools 'inst50hx\embed'
+          # The embed binary is not tracked in the repo (single source of
+          # truth lives at efi-unlock/50HXUNLK.EFI); create the dir if
+          # actions/checkout left it empty.
+          New-Item -ItemType Directory -Force -Path $EmbedDir | Out-Null
           Copy-Item -Force (Join-Path $W 'efi-unlock\50HXUNLK.EFI') `
-                    (Join-Path $Tools 'inst50hx\embed\50HXUNLK.EFI')
+                    (Join-Path $EmbedDir '50HXUNLK.EFI')
 
       - name: Build the Go tools
         shell: pwsh
