@@ -6399,35 +6399,50 @@ static INTN u40x_enc_found = 0;
  * Detect via CF8 only — the detection itself must not use the
  * unsafe RootBridgeIo path.
  *
- * AGESA can place the iGPU at any bus up to 0x30+ (see comment on
- * u40x_find_gpu_pass); v1.1.1 only scanned bus 0 and missed hosts
- * where the iGPU lives elsewhere. v1.1.2 scans all 256 buses with
- * an early exit on non-AMD host bridge. */
+ * v1.1.1 only scanned bus 0 and missed hosts where AGESA puts the
+ * iGPU elsewhere. v1.1.2 widened to bus 0..255 — still misses hosts
+ * where AGESA hides the iGPU from CF8 enumeration entirely (user on
+ * issue #24: iGPU at 0xB per Windows, but CF8 reads at bus 0xB return
+ * 0xFFFFFFFF, same way enc=0/1 couldn't see the cmp50). v1.1.3
+ * switches the primary check to CPUID — the only path that doesn't
+ * go through AGESA — and keeps CF8 as a fallback for exotic topologies.
+ *
+ * Trade-off: every AMD CPU triggers the APU path, including Threadripper
+ * / EPYC (which have no iGPU). The cost is small — we only skip the
+ * pre-OS Gen2 retrain, the OS-side fallback still works — and the
+ * upside (no hangs on real Ryzen APU hosts) is much larger. */
 static BOOLEAN g_ryzenApu = FALSE;
 
 static BOOLEAN u40x_is_ryzen_apu(void)
 {
-    UINTN bus, d, f;
-    /* Fast path: if the host bridge (bus 0 dev 0) isn't AMD, skip the scan. */
-    UINT32 hb = u40x_pci_rbdf(0, 0, 0, 0, 2);
-    if (hb == 0xFFFFFFFFu || (hb & 0xFFFFu) != 0x1022u)
-        return FALSE;
-    /* AMD system: scan all buses for an AMD iGPU (vendor 0x1022,
-     * class 0x03 = display). Audio (class 0x04) is the iGPU's HDA
-     * function; covered implicitly because the iGPU is usually
-     * present alongside it. */
-    for (bus = 0; bus < 256; bus++) {
-        for (d = 0; d < 32; d++) {
-            for (f = 0; f < 8; f++) {
-                UINT32 id = u40x_pci_rbdf(bus, d, f, 0, 2);
-                UINT32 cc;
-                if (id == 0xFFFFFFFFu || (id & 0xFFFFu) == 0u)
-                    continue;
-                if ((id & 0xFFFFu) != 0x1022u)
-                    continue;
-                cc = u40x_pci_rbdf(bus, d, f, 0x08, 2);
-                if (((cc >> 24) & 0xFFu) == 0x03u)
-                    return TRUE;
+    UINT32 eax, ebx, ecx, edx;
+
+    /* Primary: CPUID leaf 0 returns a 12-char vendor string in
+     * EBX, EDX, ECX. "AuthenticAMD" = 0x68747541 0x69746E65 0x444D4163.
+     * Modern Ryzen desktop CPUs all have iGPU, so AMD ≈ APU here. */
+    __asm__ __volatile__("cpuid"
+        : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+        : "a"(0));
+    if (ebx == 0x68747541u && edx == 0x69746E65u && ecx == 0x444D4163u)
+        return TRUE;
+
+    /* Non-AMD CPU. CF8 fallback for exotic topologies where an
+     * AMD iGPU sits on an Intel host (rare, but free to check). */
+    {
+        UINTN bus, d, f;
+        for (bus = 0; bus < 256; bus++) {
+            for (d = 0; d < 32; d++) {
+                for (f = 0; f < 8; f++) {
+                    UINT32 id = u40x_pci_rbdf(bus, d, f, 0, 2);
+                    UINT32 cc;
+                    if (id == 0xFFFFFFFFu || (id & 0xFFFFu) == 0u)
+                        continue;
+                    if ((id & 0xFFFFu) != 0x1022u)
+                        continue;
+                    cc = u40x_pci_rbdf(bus, d, f, 0x08, 2);
+                    if (((cc >> 24) & 0xFFu) == 0x03u)
+                        return TRUE;
+                }
             }
         }
     }
