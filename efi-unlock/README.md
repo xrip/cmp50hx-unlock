@@ -189,8 +189,11 @@ itself never survives a GPU reset anyway).
   failed debug run chainloaded cleanly and Linux came up with zero Xid).
 - The first test on any new board should use BootNext (auto-fallback), and
   the machine should be reachable for a cold cycle.
-- 10 GB cards only in this build: 20 GB cards need FRTS `0x4FFE00000` and
-  matching WPR2 constants (two `#define`s; untested).
+- 10 GiB and 20 GiB cards both unlock. The 20 GiB SKU is detected at
+  runtime from the WPR2 range the VBIOS POST latches (`0x04FFEE00:0x04FFE000`
+  for 20 GiB, `0x027FEE00:0x027FE000` for 10 GiB — same span `0xE00`) and
+  selects FRTS `0x4FFE00000` / fbSize `0x500000000` instead of the 10 GiB
+  defaults. Cold POST with no VBIOS FWSEC keeps the 10 GiB defaults.
 - One card per run: the application unlocks the first `10de:1e09` it
   finds; multi-GPU hosts need an iteration loop (not yet ported).
 - Windows: untested on this card. The 40HX project's Windows recipe

@@ -500,6 +500,28 @@ extern const UINT8 gsp_bl_tu102[];
 #define FW50_FRTS_OFFSET        0x27FE00000ULL /* frtsOffset (10GB FB；live dmesg WPR=027fee00:027fe000) */
 #define FW50_WPR2_LO_UP         0x027FE000UL
 #define FW50_WPR2_HI_UP         0x027FEE00UL
+static UINT64 g_fbSize     = 0x280000000ULL;
+static UINT64 g_frtsOffset = FW50_FRTS_OFFSET;
+static UINT32 g_wpr2LoUp   = FW50_WPR2_LO_UP;
+static UINT32 g_wpr2HiUp   = FW50_WPR2_HI_UP;
+
+static VOID
+detect_fb_size(VOID)
+{
+    UINT32 lo = mmio_read32(REG_PFB_MMU_WPR2_LO) & 0xFFFFFFF0U;
+    UINT32 hi = mmio_read32(REG_PFB_MMU_WPR2_HI) & 0xFFFFFFF0U;
+    UINT32 span = hi - lo;
+    if (span == 0xE00U && lo >= 0x04000000U && lo < 0x06000000U) {
+        g_fbSize     = 0x500000000ULL;
+        g_frtsOffset = (UINT64)lo << 8;
+        g_wpr2LoUp   = lo;
+        g_wpr2HiUp   = hi;
+        Print(L"[50HX] detected 20 GiB card (WPR2_LO=0x%08x, fbSize=0x%llx)\n",
+              lo, g_fbSize);
+    } else {
+        Print(L"[50HX] using 10 GiB geometry (WPR2_LO=0x%08x)\n", lo);
+    }
+}
 /* v68: real values for the 40HX FWSEC descriptor (V2 @0x3ec28) - on Turing it is an NS+SEC
  * split-segment load, not a whole-block SEC=1 DMA like GA102:
  *   +0x18 imemLoad=0x9a00  +0x20 imemSecBase=0x400  +0x24 imemSecSize=0x9600
@@ -1918,13 +1940,13 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
     c[4] = 0; c[5] = 2;
     /* frtsRegionDesc (20B): ver=1 size=20 off4k=frts>>12 size=0x100 media=2 */
     c[6] = 1; c[7] = 20;
-    c[8] = (UINT32)(FW50_FRTS_OFFSET >> 12);
+    c[8] = (UINT32)(g_frtsOffset >> 12);
     c[9] = 0x100;
     c[10] = 2;
     mapper[11] = FWSEC_CMD_FRTS;           /* init_cmd = 0x15 (FRTS) */
     __asm__ volatile("wbinvd" ::: "memory");
     Print(L"fwsec50: mapper.init_cmd=0x%x frts4k=0x%x (frts=0x%llx)\n",
-          mapper[11], c[8], FW50_FRTS_OFFSET);
+          mapper[11], c[8], g_frtsOffset);
 
     /* 3. kflcnDisableCtxReq + TRANSCFG (host DMA 到 falcon 需要):
      *    v70 BL 用 ctxDma=4 (PHYS_SYS_NCOH, BL firmware固定) → TRANSCFG(4).
@@ -2077,8 +2099,8 @@ fwsec_boot_gsp_50hx(UINT64 fwsecPhys)
     for (i = 0; i < 5000; i++) {
         UINT32 lo = mmio_read32(REG_PFB_MMU_WPR2_LO);
         UINT32 hi = mmio_read32(REG_PFB_MMU_WPR2_HI);
-        if ((lo & 0xFFFFFFF0u) == FW50_WPR2_LO_UP &&
-            (hi & 0xFFFFFFF0u) == FW50_WPR2_HI_UP) {
+        if ((lo & 0xFFFFFFF0u) == g_wpr2LoUp &&
+            (hi & 0xFFFFFFF0u) == g_wpr2HiUp) {
             Print(L"fwsec50: *** WPR2 UP lo=0x%08x hi=0x%08x after %dms ***\n",
                   lo, hi, (INTN)i);
             return TRUE;
@@ -4517,8 +4539,9 @@ build_wpr_meta(GspFwWprMeta *m, UINT64 elfPhys, UINT64 elfSize,
      * v62: heap 依赖 FB size — 0x7F00000 是 10GB(CMP90HX) 实测；40HX 8GB
      * 的 log53 真解 dmesg 显示 gspFwHeap=0x1f7900000+0x6900000 → 8GB 卡
      * heap = 0x6900000。按 fbSize 选值。 */
-    m->gspFwHeapSize   = (fbSize == 0x280000000ULL) ? 0x7F00000ULL
-                                                   : 0x6900000ULL;
+    m->gspFwHeapSize   = (fbSize == 0x280000000ULL) ? 0x7F00000ULL   /* 10 GiB */
+                       : (fbSize == 0x500000000ULL) ? 0xFE00000ULL   /* 20 GiB */
+                                                   : 0x6900000ULL;   /* 8 GiB */
     m->gspFwHeapOffset = (m->gspFwOffset - m->gspFwHeapSize) & ~(MB - 1);
     m->gspFwWprStart   = m->gspFwHeapOffset - MB;     /* wprMetaSize = 1MB */
     m->nonWprHeapSize  = MB;
@@ -6603,6 +6626,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         Print(L"[50HX] BAR enable failed; abort\n");
         return EFI_DEVICE_ERROR;
     }
+    /* Detect the card SKU from the WPR2 the VBIOS POST latched (10 GiB vs 20 GiB).
+     * Must happen before any code path that consumes g_fbSize / g_frtsOffset
+     * (build_wpr_meta below, fwsec_boot_gsp_50hx in step [8b]). Cold POST with
+     * no VBIOS FWSEC keeps the 10 GiB defaults — same fallback as before. */
+    detect_fb_size();
 #ifdef VBIOS_DUMP
     u40x_vbios_dump();          /* v65: after BAR enable; -> \50hx_vbios.bin */
 #endif
@@ -6675,9 +6703,9 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     Status = alloc_fwsec_buffer((WPR_META_SIZE + 0xFFFu) >> 12, &wprMetaPhys);
     if (EFI_ERROR(Status)) { Print(L"[50HX] alloc meta: %r\n", Status); goto done; }
     wprMeta = (GspFwWprMeta *)(UINTN)wprMetaPhys;
-    Print(L"[50HX] build_wpr_meta (fbSize=0x280000000 = 10GB)\n");
+    Print(L"[50HX] build_wpr_meta (fbSize=0x%llx)\n", g_fbSize);
     build_wpr_meta(wprMeta, radixPhys, radixSize, v67Phys,
-                   0x280000000ULL, blPhys, GSP_RM_BOOT_SIZE);
+                   g_fbSize, blPhys, GSP_RM_BOOT_SIZE);
     __asm__ volatile("wbinvd" ::: "memory");
     Print(L"[50HX] meta@0x%lx radix@0x%lx ucode@0x%lx v67@0x%lx fb=0x%lx\n",
           wprMetaPhys, radixPhys, ucodePhys, v67Phys, wprMeta->fbSize);
@@ -6735,12 +6763,12 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         EFI_PHYSICAL_ADDRESS fwsecPhys = 0;
         BOOLEAN wprUp = FALSE;
         BOOLEAN wpr2UpNow =
-            (mmio_read32(REG_PFB_MMU_WPR2_LO) == FW50_WPR2_LO_UP &&
-             mmio_read32(REG_PFB_MMU_WPR2_HI) == FW50_WPR2_HI_UP);
+            (mmio_read32(REG_PFB_MMU_WPR2_LO) == g_wpr2LoUp &&
+             mmio_read32(REG_PFB_MMU_WPR2_HI) == g_wpr2HiUp);
         if (wpr2UpNow) {
             Print(L"[50HX fwsec50] WPR2 up after GFW kill — skip FWSEC\n");
         } else {
-        if (g_Wpr2LoPreKill == FW50_WPR2_LO_UP)
+        if (g_Wpr2LoPreKill == g_wpr2LoUp)
             Print(L"[50HX fwsec50] WPR2 was up pre-kill but dropped — re-run FWSEC\n");
         Status = alloc_fwsec_buffer((UINTN)((FW50_BLOB_SIZE + 0xFFFu) >> 12),
                                     &fwsecPhys);

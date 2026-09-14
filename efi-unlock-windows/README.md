@@ -149,9 +149,10 @@ Boot Manager` is untouched and always bootable.
   enabled here, expect numbers close to the patched-module row.
 - Multi-GPU hosts: v1 unlocks the first `10de:1e09` the installer
   sees. Multi-card iteration is not ported from the 40HX tool yet.
-- The EFI binary must match the host architecture (x64). Other 50HX
-  cards with different firmware (20 GB cards) need a different FRTS
-  constant — see `../efi-unlock/README.md`.
+- The EFI binary must match the host architecture (x64). 10 GiB and 20 GiB
+  cards are both supported — the EFI detects the SKU from the WPR2 range
+  the VBIOS POST latches and picks the matching FRTS constant
+  (see `../efi-unlock/README.md`).
 
 ## Provenance and license
 
