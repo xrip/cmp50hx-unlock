@@ -74,11 +74,18 @@ jobs:
             cmp50hx-unlock-linux.tar.gz
             cmp50hx-unlock-linux.tar.gz.sha256
 
+      - name: Stage the EFI binary for upload
+        run: |
+          set -eux
+          mkdir -p efi-bin
+          cp efi-unlock/50HXUNLK.EFI efi-bin/50HXUNLK.EFI
+          ls -la efi-bin/
+
       - name: Upload the EFI binary for the Windows job
         uses: actions/upload-artifact@v4
         with:
           name: cmp50hx-efi
-          path: efi-unlock/50HXUNLK.EFI
+          path: efi-bin/50HXUNLK.EFI
 
   # -------------------------------------------------------------------
   # Windows: build the three Go tools (they embed the EFI binary from
@@ -100,11 +107,17 @@ jobs:
       # Windows installer ships the same EFI as the Linux release.
       # The embed copy in the repo is only used for local Windows
       # builds outside this workflow.
+      #
+      # NOTE: download path must be a *directory*, not a file path.
+      # actions/download-artifact@v4 extracts the artifact ZIP into
+      # that directory; the ZIP contains efi-bin/50HXUNLK.EFI (from
+      # the staging step in the Linux job), so the extracted file
+      # ends up at efi-artifact/efi-bin/50HXUNLK.EFI.
       - name: Download the EFI binary built by the Linux job
         uses: actions/download-artifact@v4
         with:
           name: cmp50hx-efi
-          path: efi-unlock/50HXUNLK.EFI
+          path: efi-artifact
 
       - name: Sync EFI into the Go embed path
         shell: pwsh
@@ -113,12 +126,17 @@ jobs:
           $W = $env:GITHUB_WORKSPACE
           $Tools = Join-Path $W 'efi-unlock-windows\tools'
           $EmbedDir = Join-Path $Tools 'inst50hx\embed'
+          $Downloaded = Join-Path $W 'efi-artifact\efi-bin\50HXUNLK.EFI'
+          if (-not (Test-Path $Downloaded)) {
+              throw "downloaded EFI missing at $Downloaded"
+          }
           # The embed binary is not tracked in the repo (single source of
           # truth lives at efi-unlock/50HXUNLK.EFI); create the dir if
           # actions/checkout left it empty.
           New-Item -ItemType Directory -Force -Path $EmbedDir | Out-Null
-          Copy-Item -Force (Join-Path $W 'efi-unlock\50HXUNLK.EFI') `
-                    (Join-Path $EmbedDir '50HXUNLK.EFI')
+          Copy-Item -Force $Downloaded (Join-Path $EmbedDir '50HXUNLK.EFI')
+          $hash = (Get-FileHash (Join-Path $EmbedDir '50HXUNLK.EFI') -Algorithm SHA256).Hash
+          Write-Host "synced embed EFI sha256: $hash"
 
       - name: Build the Go tools
         shell: pwsh
