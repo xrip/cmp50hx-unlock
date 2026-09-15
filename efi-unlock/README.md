@@ -283,7 +283,6 @@ itself never survives a GPU reset anyway).
 | `bl_gsp_tu102.bin` | 768 | `f21f1cfbb8fffa80` | = `ksec2GetBinArchiveBlUcode_TU102` |
 | `fwsec_50hx_prod.bin` | 40432 | `d8981d40f66339b7` | extracted here (below) |
 | `fwsec_50hx_dbg.bin` | 40432 | `82e7d56d0b589544` | extracted here |
-| `fwsec_ga102.bin` + `_sig` | — | — | 90HX leftovers, inert |
 | `sec2_ucode_vbios_49/89.bin` | 16384 | `4fe7b59af6de3b6` | dev experiments, inert |
 
 Full hashes: `sha256sum blobs/*.bin`.
