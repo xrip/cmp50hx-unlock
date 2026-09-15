@@ -15,10 +15,9 @@ stock driver** (2026-09-10). See "Proof" below.
 - **2026-09-10, host .224** (X79 / older board): the headline A/B matrix
   (stock vs EFI, full SM/Tensor speed, ~31.7× FP32 / ~28.4× DP4A).
 - **2026-09-14, host from issue #24** (AGESA / AMD Ryzen APU): same
-  exploit fires, but the EFI detects the APU via CPUID, skips the
-  AGESA-unsafe RootBridgeIo paths and the pre-OS Gen2 retrain (the
-  retrain relinks the root port that also serves the APU's iGPU,
-  which AGESA does not recover from). The unlock itself still runs
+  exploit fires, but the EFI detects the APU via CPUID and skips the
+  AGESA-unsafe RootBridgeIo paths (CF8-only GPU find). The unlock
+  itself still runs
   end-to-end; OS brings Gen2 up via the Windows BYOVD logon task or
   the Linux `cmp50hx-gen2.service`. See
   [`../efi-unlock-windows/README.md`](../efi-unlock-windows/README.md)
@@ -62,21 +61,24 @@ INT32, and memory bandwidth are not clamped).
 | SM/Tensor compute (SS0/SS1) | **yes** | also yes (redundant) |
 | RT-core count report (56) | no | patch 02 |
 | 16 GiB BAR1 ReBAR | no | patch 03 |
-| PCIe Gen2 x4 | **yes** (XVE override + LNKCTL2 RMW + retrain pulse) | patch 04 (alternative) |
+| PCIe Gen2 x4 | no — OS-side only (issue #25) | patch 04 / OS-side tooling |
 | Idle-power governor | no | separate tools |
 
-On AGESA / AMD Ryzen APU hosts the EFI **skips** the Gen2 retrain and the
+**Gen2 is never attempted pre-OS** (removed in v1.1.8, issue #25): the
+pre-OS retrain never trained on any host (X79: `LNKCTL2` reads back
+read-only; AGESA: the retrain relinks the root port that also serves
+the iGPU) and on Intel X99/X299 boards it hung the boot entirely.
+Gen2 is applied OS-side: Windows installer BYOVD logon task, Linux
+`cmp50hx-gen2.service` / kernel patch 04.
+
+On AGESA / AMD Ryzen APU hosts the EFI also **skips** the
 spec/compact RootBridgeIo paths: AGESA hides unmodelled Type-0 devices
 (iGPU / audio on bus 0) from `gRb->Pci.Read`, which corrupts the stack
-on probe, and the same root port relinks the iGPU link during retrain
-which AGESA does not recover from. Detection is `u40x_is_ryzen_apu()`
+on probe. Detection is `u40x_is_ryzen_apu()`
 via CPUID leaf 0 (vendor string `"AuthenticAMD"` = `0x68747541 / 0x69746E65
 / 0x444D4163`); on detection the EFI falls back to the CF8-only path for
-the GPU find and prints `[gen2] Ryzen APU: skipping retrain (root port
-also serves iGPU, OS-side Gen2 needed)`. The unlock itself (SS0/SS1)
-still completes — only the pre-OS Gen2 retrain is skipped, and the
-OS-side Gen2 task (Windows installer BYOVD logon task, or the Linux
-`cmp50hx-gen2.service`) brings Gen2 up after boot.
+the GPU find. The unlock itself (SS0/SS1)
+still completes.
 
 The unlock is boot-time state, not a flash: it is re-applied every time the
 application runs and disappears if the GPU is reset. Both paths compose
@@ -221,17 +223,13 @@ Without `--return-to-grub` the behavior is unchanged: the application uses
 its existing internal chainload ladder (or returns to firmware as its last
 resort), which remains the default for BootNext and BootOrder installations.
 
-To keep the compute unlock but skip the PCIe Gen2 configuration and retrain,
-pass the opt-in load option `--no-gen2`. It can be used independently or
-combined with `--return-to-grub`:
-
-```grub
-chainloader /EFI/50HX/50HXUNLK.EFI --return-to-grub --no-gen2
-```
-
-Without `--no-gen2`, PCIe Gen2 behavior is unchanged and remains enabled by
-default. The log prints `[gen2] skipped by --no-gen2` when the option is in
-effect.
+> **v1.1.8:** the pre-OS PCIe Gen2 attempt was removed entirely (issue #25 —
+> the retrain hung Intel X99/X299 boards and never trained on any host), so
+> the earlier `--no-gen2` load option is obsolete: Gen2 is never attempted
+> pre-OS on any host. An entry that still passes `--no-gen2` boots fine —
+> unknown load-option text is ignored. Gen2 comes from the OS side (Windows
+> BYOVD logon task, Linux `cmp50hx-gen2.service` / kernel patch 04); the log
+> prints `[gen2] not attempted pre-OS — OS-side Gen2 only (issue #25)`.
 
 ### Rollback
 

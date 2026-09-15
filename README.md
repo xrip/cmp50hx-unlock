@@ -20,8 +20,12 @@ per OS, one command to unlock:
 | **Windows** | `cmp50hx-unlock-windows.zip` | unzip, right-click `50HXInstaller.exe` → *Run as administrator* → *Install* |
 
 Both bundles ship the same UEFI compute unlock (proven live, FP32 31.7×
-and DP4A 28.4× over the locked stock driver — see [A/B matrix](efi-unlock/runs/20260910-ab-stock-vs-efi.md))
-plus a Gen2 PCIe unlock. **No kernel patches required.** On Windows the
+and DP4A 28.4× over the locked stock driver — see [A/B matrix](efi-unlock/runs/20260910-ab-stock-vs-efi.md)).
+**No kernel patches required** for the compute unlock. PCIe Gen2 is not
+attempted pre-OS (issue #25: the pre-OS retrain hung some Intel X99/X299
+boards and never trained on other hosts); it is applied OS-side — on
+Windows by the installer's BYOVD logon task, on Linux by the patched
+kernel module / `cmp50hx-gen2.service`. On Windows the
 installer also enables `EnableGpuFirmware=1` so the EFI state survives
 into the OS driver. On Linux the one-click `.run` builds and installs the
 patched kernel module automatically; it is the equivalent path but
@@ -29,10 +33,10 @@ required only if you want the patched kernel module too (the UEFI unlock
 itself works with the stock module).
 
 **AGESA / AMD Ryzen APU hosts (issue #24):** the EFI detects an AMD CPU
-via CPUID and skips the AGESA-unsafe RootBridgeIo paths and the pre-OS
-Gen2 retrain pulse (which would relink the root port that also serves
-the APU's iGPU — AGESA does not recover). The compute unlock still
-runs to completion; OS brings Gen2 up via the Windows BYOVD logon task
+via CPUID and uses the CF8-only path for the GPU find, skipping the
+AGESA-unsafe RootBridgeIo paths. The compute unlock still
+runs to completion. Gen2 is never attempted pre-OS on any host (issue
+#25); the OS brings it up via the Windows BYOVD logon task
 or the Linux `cmp50hx-gen2.service`.
 
 To build the bundles yourself: `make release` (Linux + Windows
