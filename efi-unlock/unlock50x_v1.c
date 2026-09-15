@@ -6522,6 +6522,35 @@ static int u40x_find_gpu(void)
     } else {
         Print(L"[50HX f] %d root bridge(s)\n", (INTN)N);
     }
+
+    /* issue #25: try CF8 (enc=2) FIRST. enc=2 uses raw CPU CF8/CFC port I/O,
+     * never goes through RootBridgeIo->Pci.Read, and covers bus 0..255
+     * globally — so it doesn't depend on a working per-bridge enumeration.
+     * On Intel X99 / X299 firmware the RootBridgeIo Pci.Read path can hang
+     * mid-scan (user-reported: hang right after "[50HX f] N root bridge(s)"
+     * with no further log lines), which corrupts the unlock. By trying
+     * enc=2 first, on systems where CF8 sees the dGPU (the common case —
+     * the existing comment at u40x_find_gpu_pass explicitly notes "X79
+     * boards need the CF8 path") we never touch RootBridgeIo and never
+     * hit that hang. enc=0/1 stays as a fallback for the rare firmware
+     * where CF8 can't reach the card but a working RootBridgeIo can.
+     * On AGESA / AMD Ryzen APU hosts (g_ryzenApu == TRUE) RootBridgeIo
+     * is also unsafe (issue #24 stack corruption), so the fallback
+     * is skipped in that case too. */
+    if (u40x_find_gpu_pass(2)) {
+        if (H)
+            uefi_call_wrapper(BS->FreePool, 1, H);
+        return 1;
+    }
+
+    if (g_ryzenApu) {
+        if (H)
+            uefi_call_wrapper(BS->FreePool, 1, H);
+        Print(L"[50HX f] CF8 didn't find the card on Ryzen APU host; "
+              L"RootBridgeIo is unsafe, aborting\n");
+        return 0;
+    }
+
     for (i = 0; i < N; i++) {
         EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL *rb = NULL;
         st = uefi_call_wrapper(BS->HandleProtocol, 3, H[i], &gEfiPciRootBridgeIoProtocolGuid,
@@ -6529,19 +6558,11 @@ static int u40x_find_gpu(void)
         if (EFI_ERROR(st) || !rb)
             continue;
         gRb = rb;
-        /* issue #24: skip RootBridgeIo, go straight to CF8 below */
-        if (g_ryzenApu)
-            break;
         if (u40x_find_gpu_pass(0)) { uefi_call_wrapper(BS->FreePool, 1, H); return 1; }
         if (u40x_find_gpu_pass(1)) { uefi_call_wrapper(BS->FreePool, 1, H); return 1; }
     }
     if (H)
         uefi_call_wrapper(BS->FreePool, 1, H);
-    /* enc=2: CF8/CFC port直读兜底 —— 个别firmware的 RootBridgeIo protocol存在
-     * busrangelimit/address解析怪癖；legacy conf1 机制在hardware层覆盖 bus 0-255
-     * （Windows 侧 WinRing0 同path，AGESA 板上实测可达 10:00.0）。 */
-    if (u40x_find_gpu_pass(2))
-        return 1;
     /* 全failed：CF8 只读扫一遍，把可见devicemapping写进 50hx_log.txt（≤96 条），
      * 下次定bit“卡到底在不在 PCI 上 / 在哪个 BDF”一目了然。 */
     {
