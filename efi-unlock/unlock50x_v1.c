@@ -607,6 +607,9 @@ static UINT32 gBar0Base = 0;
 /* v1.50: WPR2 state captured before the GFW engine reset (step [7.6]),
  * used by step [8b] to decide whether the manual FWSEC boot is needed. */
 static EFI_HANDLE g_IH = NULL;   /* real image handle under the crt0 entry */
+static UINTN     g_ourImageSize = 0; /* size of our loaded EFI binary, used by
+                                      * is_our_binary() for content-based check
+                                      * when the path differs (issue #36) */
 static UINT32 g_Wpr2LoPreKill = 0;
 static UINT32 g_Wpr2HiPreKill = 0;
 
@@ -5029,6 +5032,74 @@ is_own_image(EFI_HANDLE ImageHandle, EFI_HANDLE FsHandle, const CHAR16 *Path)
     return same;
 }
 
+/* issue #36: when the Windows installer deploys 50HXUNLK.EFI to both
+ * \EFI\50HX\50HXUNLK.EFI (BCD path) and \EFI\Boot\bootx64.efi (firmware
+ * fallback path), the candidate path in the chainload ladder differs
+ * from our loaded path — so the path-based is_own_image() above returns
+ * false for bootx64.efi even though the candidate binary IS our binary,
+ * and the chainload loads it, which means firmware starts our EFI again
+ * (boot loop). Bail-out path-based check is therefore not enough.
+ *
+ * Content-side fallback: if our loaded binary and the candidate on the
+ * same volume have the same FileSize, they are very likely the same
+ * binary — the chance of a size collision with a real bootloader on
+ * our ladder (shim ~1.5MB, grub ~150KB, systemd-boot ~150KB,
+ * bootx64.efi ~1.6MB for our EFI) is negligible. Open the candidate,
+ * read its EFI_FILE_INFO.FileSize, compare with g_ourImageSize. */
+static BOOLEAN
+candidate_is_our_binary(EFI_HANDLE FsHandle, const CHAR16 *Path)
+{
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Vol = NULL;
+    EFI_FILE_HANDLE Root = NULL, File = NULL;
+    EFI_FILE_INFO *Info = NULL;
+    UINTN InfoSize = 0;
+    UINT64 CandSize = 0;
+    BOOLEAN same_size = FALSE;
+    static EFI_GUID FileInfoGuid = EFI_FILE_INFO_ID;
+
+    if (g_ourImageSize == 0)
+        return FALSE;
+    if (EFI_ERROR(uefi_call_wrapper(BS->HandleProtocol, 3, FsHandle,
+            &gEfiSimpleFileSystemProtocolGuid, (VOID**)&Vol)) || !Vol)
+        return FALSE;
+    if (EFI_ERROR(Vol->OpenVolume(Vol, &Root)) || !Root)
+        return FALSE;
+    if (EFI_ERROR(Root->Open(Root, &File, (CHAR16*)Path,
+            EFI_FILE_MODE_READ, 0)) || !File) {
+        Root->Close(Root);
+        return FALSE;
+    }
+    /* GetInfo: first call returns the required buffer size in InfoSize. */
+    File->GetInfo(File, &FileInfoGuid, &InfoSize, NULL);
+    if (InfoSize == 0) goto out;
+    Info = (EFI_FILE_INFO *)AllocatePool(InfoSize);
+    if (!Info) goto out;
+    if (EFI_ERROR(File->GetInfo(File, &FileInfoGuid, &InfoSize, Info)))
+        goto out;
+    CandSize = Info->FileSize;
+    same_size = (CandSize == (UINT64)g_ourImageSize);
+
+out:
+    if (Info) FreePool(Info);
+    if (File) File->Close(File);
+    if (Root) Root->Close(Root);
+    return same_size;
+}
+
+/* True if candidate path's binary is the same as our loaded EFI binary.
+ * Path-based check first (cheap); content-size check as a fallback for
+ * the case where our binary was deployed to additional paths with
+ * different filenames (issue #36 Windows installer: deploys our EFI
+ * to \EFI\BOOT\bootx64.efi as a firmware fallback, in addition to
+ * \EFI\50HX\50HXUNLK.EFI). */
+static BOOLEAN
+is_our_binary(EFI_HANDLE ImageHandle, EFI_HANDLE FsHandle, const CHAR16 *Path)
+{
+    if (is_own_image(ImageHandle, FsHandle, Path))
+        return TRUE;
+    return candidate_is_our_binary(FsHandle, Path);
+}
+
 static EFI_STATUS
 chainload_os_one(EFI_HANDLE ImageHandle, EFI_HANDLE FsHandle, const CHAR16 *Path)
 {
@@ -5080,7 +5151,7 @@ chainload_os(EFI_HANDLE ImageHandle)
     Print(L"chainload: найдено FS-хендлов: %d\n", n);
     for (i = 0; i < n; i++)
         for (p = 0; p < sizeof(os_loader_paths)/sizeof(os_loader_paths[0]); p++) {
-            if (is_own_image(ImageHandle, Handles[i], os_loader_paths[p]))
+            if (is_our_binary(ImageHandle, Handles[i], os_loader_paths[p]))
                 continue;       /* never chainload ourselves */
             Status = chainload_os_one(ImageHandle, Handles[i], os_loader_paths[p]);
             if (!EFI_ERROR(Status)) {
@@ -6703,6 +6774,17 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
      * ImageHandle global is also unset under crt0 (u40x_entry used to set
      * it), so record the real handle for the VBIOS dumper as well. */
     g_IH = ImageHandle;
+    /* issue #36: capture our loaded binary size for the chainload
+     * self-detection fallback. The Windows installer deploys our
+     * binary to two paths (\EFI\50HX\50HXUNLK.EFI + \EFI\Boot\bootx64.efi);
+     * a path-only "is this me" check misses the second copy and lets
+     * the chainload load it (which restarts the EFI = loop). */
+    {
+        EFI_LOADED_IMAGE *li0 = NULL;
+        if (!uefi_call_wrapper(BS->HandleProtocol, 3, ImageHandle,
+                &LoadedImageProtocol, (VOID**)&li0) && li0)
+            g_ourImageSize = (UINTN)li0->ImageSize;
+    }
     u40x_open_log(ImageHandle);
     Print(L"\n=== CMP50HX Unlock v1-50HX (TU102 GSP WITH_LOADER) ===\n");
 
