@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Rebuild the initramfs with the patched CMP 50HX / CMP 90HX modules
-# (Ubuntu/Debian). Card-neutral: both installs put the modules in
+# Rebuild the initramfs with the patched CMP 50HX modules
+# (Ubuntu/Debian). Card-neutral: the install puts the modules in
 # /lib/modules/$(uname -r)/updates/.
 # Run this AFTER install.sh and AFTER you confirmed the card works:
 # the module must be verified good before it is made boot-persistent.
@@ -107,8 +107,6 @@ Reboot now. After reboot, verify every card (indices per nvidia-smi -L):
              /opt/cmp50hx-unlock/artifacts/610.43.03-${krel}/rm-issue-rate \$i > /tmp/cmp50-probe-\$i.json
              python3 /opt/cmp50hx-unlock/verify/verify.py /tmp/cmp50-probe-\$i.json
            done
-  cmp90hx: wait for cmp90hx-gen2.service to finish, then
-           sudo /opt/cmp50hx-unlock/cmp90hx/verify.sh
 Rollback:
   sudo $0 --rollback
 EOF

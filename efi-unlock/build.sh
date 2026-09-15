@@ -58,8 +58,6 @@ embed v67_payload.bin         v67_payload_bin
 embed booter_ucode_dbg.bin    booter_ucode_dbg
 embed booter_ucode_prod.bin   booter_ucode_prod
 embed gsp_rm_boot_dbg.bin     gsp_rm_boot_dbg
-embed fwsec_ga102.bin         fwsec_ga102_bin
-embed fwsec_ga102_sig.bin     fwsec_ga102_sig
 embed fwsec_50hx_prod.bin     fwsec_50hx_prod_bin
 embed fwsec_50hx_dbg.bin      fwsec_50hx_dbg_bin
 embed sec2_ucode_vbios_49.bin sec2_ucode_vbios_49
@@ -67,8 +65,7 @@ embed sec2_ucode_vbios_89.bin sec2_ucode_vbios_89
 embed bl_gsp_tu102.bin        gsp_bl_tu102
 
 OBJS="$OBJ v67_payload_bin.o booter_ucode_dbg.o booter_ucode_prod.o \
-gsp_rm_boot_dbg.o fwsec_ga102_bin.o fwsec_ga102_sig.o \
-fwsec_50hx_prod_bin.o fwsec_50hx_dbg_bin.o \
+gsp_rm_boot_dbg.o fwsec_50hx_prod_bin.o fwsec_50hx_dbg_bin.o \
 sec2_ucode_vbios_49.o sec2_ucode_vbios_89.o gsp_bl_tu102.o"
 
 echo "=== 3. link ==="
