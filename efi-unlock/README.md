@@ -193,6 +193,46 @@ sudo efibootmgr -o XXXX,0000,0003,0001,0002   # your entry first,
 Every boot then runs the unlock before the OS. Nothing is flashed; removing
 the boot entry (below) restores the stock behavior completely.
 
+### 5. Run from an existing GRUB Windows entry
+
+The application also accepts the opt-in EFI load option
+`--return-to-grub`. In this mode it performs the same unlock but skips its
+internal OS-loader search and returns `EFI_SUCCESS` to GRUB. GRUB can then
+start Windows without a reset (and therefore without another GPU POST):
+
+```grub
+menuentry "Windows 10 (CMP 50HX unlock)" {
+    insmod part_gpt
+    insmod fat
+    insmod chain
+    search --no-floppy --fs-uuid --set=root YOUR_EFI_PARTITION_UUID
+
+    chainloader /EFI/50HX/50HXUNLK.EFI --return-to-grub
+    boot
+    chainloader /EFI/Microsoft/Boot/bootmgfw.efi
+}
+```
+
+The first explicit `boot` starts the unlock application. Once it returns,
+GRUB continues with the next `chainloader`; the final Windows chainloader is
+started implicitly at the end of the menu entry.
+
+Without `--return-to-grub` the behavior is unchanged: the application uses
+its existing internal chainload ladder (or returns to firmware as its last
+resort), which remains the default for BootNext and BootOrder installations.
+
+To keep the compute unlock but skip the PCIe Gen2 configuration and retrain,
+pass the opt-in load option `--no-gen2`. It can be used independently or
+combined with `--return-to-grub`:
+
+```grub
+chainloader /EFI/50HX/50HXUNLK.EFI --return-to-grub --no-gen2
+```
+
+Without `--no-gen2`, PCIe Gen2 behavior is unchanged and remains enabled by
+default. The log prints `[gen2] skipped by --no-gen2` when the option is in
+effect.
+
 ### Rollback
 
 ```bash
