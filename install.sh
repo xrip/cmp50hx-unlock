@@ -52,7 +52,8 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' \
+                "${BASH_SOURCE[0]}"
             exit 0
             ;;
         *)
@@ -92,10 +93,8 @@ if [[ -n "${card}" ]]; then
 elif [[ ${#present_cards[@]} -eq 1 ]]; then
     card="${present_cards[0]}"
     log "detected card: ${card}"
-elif [[ ${#present_cards[@]} -eq 0 ]]; then
-    die "no CMP 50HX (10de:1e09) found on the PCI bus; use --card to force"
 else
-    die "unexpected card detection result: ${present_cards[*]}"
+    die "no CMP 50HX (10de:1e09) found on the PCI bus; use --card to force"
 fi
 
 readonly pci_device="0x1e09"
