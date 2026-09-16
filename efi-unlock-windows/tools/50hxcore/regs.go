@@ -8,7 +8,7 @@ import (
 	"unsafe"
 )
 
-// ---- Low-level handle / ioctl (50hx_bridge + WinRing0) ----
+// ---- Low-level handle / ioctl (WinRing0) ----
 var (
 	k32 = syscall.NewLazyDLL("kernel32.dll")
 	// Lazy-init for gen2 / diagnostics.
@@ -18,32 +18,17 @@ var (
 )
 
 const (
-	// 50hx_bridge
-	ioctlRb = (40001 << 16) | (0x800 << 2)
-	ioctlWb = (40001 << 16) | (0x801 << 2)
 	// WinRing0 (CTL(fn,acc) = (40000<<16)|(acc<<14)|(fn<<2))
 	ioctlRpci = (40000 << 16) | (1 << 14) | (0x851 << 2)
 	ioctlWpci = (40000 << 16) | (2 << 14) | (0x852 << 2)
 )
 
-type bar0RdIn struct {
-	Offset uint64
-	Count  uint32
-}
-type bar0WrIn struct {
-	Offset uint64
-	Value  uint32
-}
-type bar0WrOut struct {
-	Old uint32
-	New uint32
-}
 type pciIoIn struct {
 	BDF uint32
 	Reg uint32
 }
 
-// OpenDevice opens a device such as \\.\50hxBridge or \\.\WinRing0_1_2_0.
+// OpenDevice opens a device such as \\.\WinRing0_1_2_0.
 func OpenDevice(name string) (syscall.Handle, error) {
 	ptr, _, _ := createFileW.Call(
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(name))),
@@ -83,35 +68,6 @@ func CloseHandle(h syscall.Handle) {
 	if h != 0 {
 		closeHandle.Call(uintptr(h))
 	}
-}
-
-// ---- BAR0 via 50hx_bridge ----
-
-// Bar0Rd reads 4 bytes from GPU BAR0 at the given offset.
-func Bar0Rd(bh syscall.Handle, off uint64) (uint32, error) {
-	in := bar0RdIn{Offset: off, Count: 1}
-	out := make([]byte, 4)
-	ib := make([]byte, 12)
-	binary.LittleEndian.PutUint64(ib[0:], in.Offset)
-	binary.LittleEndian.PutUint32(ib[8:], in.Count)
-	_, err := IoCtl(bh, ioctlRb, ib, out)
-	if err != nil {
-		return 0, err
-	}
-	return binary.LittleEndian.Uint32(out), nil
-}
-
-// Bar0Wr writes to GPU BAR0 (returns old/new value).
-func Bar0Wr(bh syscall.Handle, off uint64, val uint32) (uint32, uint32, error) {
-	ib := make([]byte, 12)
-	binary.LittleEndian.PutUint64(ib[0:], off)
-	binary.LittleEndian.PutUint32(ib[8:], val)
-	ob := make([]byte, 8)
-	_, err := IoCtl(bh, ioctlWb, ib, ob)
-	if err != nil {
-		return 0, 0, err
-	}
-	return binary.LittleEndian.Uint32(ob[0:]), binary.LittleEndian.Uint32(ob[4:]), nil
 }
 
 // ---- PCI config via WinRing0 ----

@@ -29,7 +29,6 @@ const (
 
 // UnlockState is a one-shot snapshot of "did the unlock succeed".
 type UnlockState struct {
-	BridgeOK  bool   // \\.\50hxBridge openable
 	WinRingOK bool   // \\.\WinRing0_1_2_0 openable
 	TSOK      bool   // \\.\ThrottleStop openable (v2.5 BYOVD channel)
 	Speed     uint32 // PCIe gen (0=unknown)
@@ -155,53 +154,6 @@ func FindGPUPCI(wh syscall.Handle) (uint32, bool) {
 		}
 	}
 	return 0, false
-}
-
-// ReadUnlockState opens the two drivers and reads SS0/SS1/link speed.
-// retries: how many times to retry when the driver is not yet ready
-// (just got to the desktop, driver still loading);
-// delayMs: delay between retries. Suitable for waiting on driver readiness
-// immediately after logon.
-func ReadUnlockState(retries int, delayMs int) *UnlockState {
-	st := &UnlockState{}
-	bh, err1 := OpenDevice(`\\.\50hxBridge`)
-	wh, err2 := OpenDevice(`\\.\WinRing0_1_2_0`)
-	for i := 0; (err1 != nil || err2 != nil) && i < retries; i++ {
-		if err1 != nil {
-			bh, err1 = OpenDevice(`\\.\50hxBridge`)
-		}
-		if err2 != nil {
-			wh, err2 = OpenDevice(`\\.\WinRing0_1_2_0`)
-		}
-		time.Sleep(time.Duration(delayMs) * time.Millisecond)
-	}
-	if err1 != nil || err2 != nil {
-		if err1 != nil {
-			CloseHandle(bh)
-		}
-		if err2 != nil {
-			CloseHandle(wh)
-		}
-		return st
-	}
-	defer CloseHandle(bh)
-	defer CloseHandle(wh)
-	st.BridgeOK, st.WinRingOK = true, true
-
-	// PCIe gen: first locate the 50HX's BDF by VEN/DEV, then read its
-	// link speed (skipping device-identity check would misread the speed
-	// of other PCIe devices — the multi-GPU / non-bus-1 trap).
-	if bdf, ok := FindGPUPCI(wh); ok {
-		st.Speed = LinkSpeed(wh, bdf)
-	}
-	if v, err := Bar0Rd(bh, SS0Offset); err == nil {
-		st.SS0, st.SS0OK = v, true
-		st.Unlocked = v == 0x88888888
-	}
-	if v, err := Bar0Rd(bh, SS1Offset); err == nil {
-		st.SS1 = v
-	}
-	return st
 }
 
 // ReadUnlockStateV2 is the v2.5 channel — WinRing0 (config: link /
