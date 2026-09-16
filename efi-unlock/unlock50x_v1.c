@@ -3570,7 +3570,7 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
     EFI_HANDLE h = NULL;
     EFI_STATUS st;
 
-    /* где живём мы сами — коррелирует со списком FS#N ниже */
+    /* which volume WE were loaded from - correlates with the FS#N list below */
     {
         EFI_LOADED_IMAGE *li = NULL;
         EFI_DEVICE_PATH *dp = NULL;
@@ -3800,8 +3800,8 @@ chainload_os(EFI_HANDLE ImageHandle)
     }
     Print(L"chainload: FS handles found: %d\n", n);
     for (i = 0; i < n; i++) {
-        /* какое устройство за каждым FS-хендлом (диск/раздел ESP) — видно,
-         * С КАКОГО тома пытаемся грузиться (issue #43/#47) */
+        /* which device backs each FS handle (disk/partition of the ESP) -
+         * shows WHICH volume each boot attempt targets (issue #43/#47) */
         EFI_DEVICE_PATH *dp = NULL;
         if (!EFI_ERROR(uefi_call_wrapper(BS->HandleProtocol, 3,
                 Handles[i], &u40x_dp_guid, (VOID**)&dp)) && dp) {
