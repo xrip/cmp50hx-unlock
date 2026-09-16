@@ -3728,6 +3728,7 @@ chainload_os_one(EFI_HANDLE ImageHandle, EFI_HANDLE FsHandle, const CHAR16 *Path
     Status = uefi_call_wrapper(BS->HandleProtocol, 3,
         FsHandle, &gEfiSimpleFileSystemProtocolGuid, (VOID**)&FS);
     if (EFI_ERROR(Status)) return Status;
+    Print(L"chainload: %s: OpenVolume...\n", Path);
     Status = uefi_call_wrapper(FS->OpenVolume, 2, FS, &Root);
     if (EFI_ERROR(Status)) return Status;
     Status = uefi_call_wrapper(Root->Open, 5, Root, &File, (CHAR16*)Path, EFI_FILE_MODE_READ, 0);
@@ -3767,6 +3768,9 @@ chainload_os(EFI_HANDLE ImageHandle)
     Print(L"chainload: найдено FS-хендлов: %d\n", n);
     for (i = 0; i < n; i++)
         for (p = 0; p < sizeof(os_loader_paths)/sizeof(os_loader_paths[0]); p++) {
+            /* issue #47: on some AMI firmwares the SFS calls below hang —
+             * this marker is the last line printed before each risky step */
+            Print(L"chainload: h%d probe %s...\n", (INT32)i, os_loader_paths[p]);
             if (is_our_binary(ImageHandle, Handles[i], os_loader_paths[p]))
                 continue;       /* never chainload ourselves */
             Status = chainload_os_one(ImageHandle, Handles[i], os_loader_paths[p]);
@@ -4182,12 +4186,25 @@ static EFI_STATUS u40x_build_radix(UINT64 dataPhys, UINT64 dataSize,
 #define XVE_CFG_ENABLE   0x80000000U
 #define REBAR_WANT       0x400000000ULL  /* 16 GiB */
 
+/* Config access MUST reuse the GPU's discovery encode: cfg_read/write32 go
+ * through gRb with one fixed layout and return zeros on CF8-found (enc=2)
+ * hosts — the issue #47 log showed cmd=0x0 / BAR1=0x0 on a live card. */
+static UINT32 rebar_rd(UINTN reg)
+{
+    return u40x_pci_rbdf(gBus, gDev, gFn, reg, u40x_enc_found);
+}
+
+static VOID rebar_wr(UINTN reg, UINT32 v)
+{
+    u40x_pci_wbdf(gBus, gDev, gFn, reg, v, u40x_enc_found);
+}
+
 static VOID
 u40x_rebar_revert(UINT32 cfg, UINT32 cya, UINT32 cmd, UINT32 b1lo, UINT32 b1hi)
 {
-    cfg_write32(0x14, b1lo);
-    cfg_write32(0x18, b1hi);
-    cfg_write32(0x04, cmd);          /* decode back on first... */
+    rebar_wr(0x14, b1lo);
+    rebar_wr(0x18, b1hi);
+    rebar_wr(0x04, cmd);             /* decode back on first... */
     mmio_write32(XVE_CFG_OFF, cfg);  /* ...then XVE via BAR0 MMIO */
     mmio_write32(XVE_CYA_OFF, cya);
     (void)mmio_read32(XVE_CYA_OFF);
@@ -4203,9 +4220,9 @@ u40x_rebar_try16g(VOID)
     cya    = mmio_read32(XVE_CYA_OFF);
     cfg    = mmio_read32(XVE_CFG_OFF);
     cap    = mmio_read32(XVE_CAP_OFF);
-    cmd    = cfg_read32(0x04);
-    b1lo   = cfg_read32(0x14);
-    b1hi   = cfg_read32(0x18);
+    cmd    = rebar_rd(0x04);
+    b1lo   = rebar_rd(0x14);
+    b1hi   = rebar_rd(0x18);
     b1base = (UINT64)(b1lo & 0xFFFFFFF0U) | ((UINT64)b1hi << 32);
     Print(L"[rebar] XVE cya=0x%08x cfg=0x%08x cap=0x%08x\n", cya, cfg, cap);
     Print(L"[rebar] BAR1 base=0x%llx flags=0x%x cmd=0x%08x\n",
@@ -4259,24 +4276,24 @@ u40x_rebar_try16g(VOID)
     }
 
     /* resize + reassign BAR1 with decode off (spec sizing sequence) */
-    cfg_write32(0x04, cmd & ~0x2U);
-    cfg_write32(0x14, 0xFFFFFFFFU);
-    cfg_write32(0x18, 0xFFFFFFFFU);
-    rlo = cfg_read32(0x14);
-    rhi = cfg_read32(0x18);
+    rebar_wr(0x04, cmd & ~0x2U);
+    rebar_wr(0x14, 0xFFFFFFFFU);
+    rebar_wr(0x18, 0xFFFFFFFFU);
+    rlo = rebar_rd(0x14);
+    rhi = rebar_rd(0x18);
     if (rlo != 0xFFFFFFFCU || rhi != 0x00000003U) {
         Print(L"[rebar] size probe 0x%08x/0x%08x (want FFFFFFFC/00000003)"
               L" — revert\n", rlo, rhi);
         u40x_rebar_revert(cfg, cya, cmd, b1lo, b1hi);
         return;
     }
-    cfg_write32(0x14, (UINT32)cand | 0xCU);
-    cfg_write32(0x18, (UINT32)(cand >> 32));
-    cfg_write32(0x04, cmd);              /* original cmd = decode on */
+    rebar_wr(0x14, (UINT32)cand | 0xCU);
+    rebar_wr(0x18, (UINT32)(cand >> 32));
+    rebar_wr(0x04, cmd);                 /* original cmd = decode on */
 
     /* verify the assignment and that VRAM really answers through it */
     {
-        UINT32 vlo = cfg_read32(0x14), vhi = cfg_read32(0x18);
+        UINT32 vlo = rebar_rd(0x14), vhi = rebar_rd(0x18);
         volatile UINT32 *p0 = (volatile UINT32 *)(UINTN)cand;
         volatile UINT32 *p1 = (volatile UINT32 *)(UINTN)(cand + REBAR_WANT / 2);
         UINT32 v0 = *p0, v1 = *p1;
