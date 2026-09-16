@@ -270,11 +270,17 @@ itself never survives a GPU reset anyway).
   geometry" checkbox. The layout then mirrors the 10 GiB proof (FRTS
   2 MiB below top-of-FB).
 - After the unlock the EFI also attempts a best-effort ReBAR activation
-  (16 GiB BAR1 — the pre-OS port of the Linux `03-cmp50-rebar.patch` XVE
-  writes). It only sticks when the upstream bridge's prefetchable window
-  already covers a 16 GiB-aligned span; on any failed check the original
-  state is restored bit-for-bit and the boot continues stock. Log prefix:
-  `[rebar]`.
+  (BAR1 — the pre-OS port of the Linux `03-cmp50-rebar.patch` XVE
+  writes). Default target is 16 GiB (selector 8); the `rebar=32g` load
+  option or the `50HXRB=32G` UEFI variable raises it to 32 GiB
+  (selector 9, proven on 20/22 GB mods — issue #47). It only sticks
+  when the upstream bridge's prefetchable window already covers an
+  aligned span; on any failed check the original state is restored
+  bit-for-bit and the boot continues stock. Log prefix: `[rebar]`.
+  On Linux, `pci=realloc,hpmemsize=8G` on the kernel command line makes
+  the kernel grow the bridge windows itself at boot (see also #14's P2P
+  recipe). Boards whose firmware window has no headroom need the BIOS
+  route — see issue #47 for the ReBarDxe + MMIO-High recipe.
 - One card per run: the application unlocks the first `10de:1e09` it
   finds; multi-GPU hosts need an iteration loop (not yet ported).
 - Windows: covered by [`../efi-unlock-windows/`](../efi-unlock-windows/README.md),

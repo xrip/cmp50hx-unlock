@@ -4215,9 +4215,11 @@ static EFI_STATUS u40x_build_radix(UINT64 dataPhys, UINT64 dataSize,
     return EFI_SUCCESS;
 }
 
-/* ===== [11] best-effort ReBAR activation (16 GiB BAR1) =====
+/* ===== [11] best-effort ReBAR activation (BAR1, 16 or 32 GiB) =====
  * GPU-side port of the Linux 03-cmp50-rebar.patch: unlock the TU102 XVE
- * CYA and set the BAR1 size selector (8 = 16 GiB). We run AFTER firmware
+ * CYA and set the BAR1 size selector (8 = 16 GiB default; 9 = 32 GiB
+ * via the rebar=32g override, proven on 20/22 GB mods in issue #47).
+ * We run AFTER firmware
  * enumeration, so the enlarged BAR1 sticks only when the upstream bridge's
  * prefetchable window already covers a 16 GiB-aligned span — on other
  * boards every write is reverted and the boot continues stock
@@ -4230,7 +4232,6 @@ static EFI_STATUS u40x_build_radix(UINT64 dataPhys, UINT64 dataSize,
 #define XVE_CFG_OFF      0x88dccUL   /* size selector (0 stock -> 8) */
 #define XVE_CFG_SEL_MASK 0x0000000FU
 #define XVE_CFG_ENABLE   0x80000000U
-#define REBAR_WANT       0x400000000ULL  /* 16 GiB */
 
 /* Config access MUST reuse the GPU's discovery encode: cfg_read/write32 go
  * through gRb with one fixed layout and return zeros on CF8-found (enc=2)
@@ -4256,8 +4257,29 @@ u40x_rebar_revert(UINT32 cfg, UINT32 cya, UINT32 cmd, UINT32 b1lo, UINT32 b1hi)
     (void)mmio_read32(XVE_CYA_OFF);
 }
 
+/* rebar=32g override (issue #47: selector 9 proven on 20/22 GB mods).
+ * Same two channels as fb=20g: the "rebar=32g" LoadOptions token
+ * (efibootmgr -u / GRUB) or the 50HXRB="32G" UEFI variable (Windows).
+ * Default stays the proven selector 8 (16 GiB). */
+static BOOLEAN
+u40x_rebar32(EFI_HANDLE IH)
+{
+    static EFI_GUID gvGuid = EFI_GLOBAL_VARIABLE;
+    UINTN sz = 8;
+    CHAR16 buf[4] = {0, 0, 0, 0};
+    UINT32 attr = 0;
+    EFI_STATUS st;
+
+    if (IH && u40x_has_load_option(IH, L"rebar=32g"))
+        return TRUE;
+    st = uefi_call_wrapper(RT->GetVariable, 5, L"50HXRB", &gvGuid,
+                           &attr, &sz, buf);
+    return !EFI_ERROR(st) && sz >= 6 &&
+           buf[0] == L'3' && buf[1] == L'2' && buf[2] == L'G';
+}
+
 static VOID
-u40x_rebar_try16g(VOID)
+u40x_rebar_try(UINT64 want, UINT32 selector)
 {
     UINT32 cya, cfg, cap, cmd, b1lo, b1hi, rlo, rhi, dw;
     UINT64 b1base, wbase, wlim, cand;
@@ -4296,25 +4318,26 @@ u40x_rebar_try16g(VOID)
         return;
     }
 
-    /* keep the current base when it is already 16 GiB-aligned and fits;
-     * otherwise relocate to the lowest 16 GiB-aligned span in the window
+    /* keep the current base when it is already size-aligned and fits;
+     * otherwise relocate to the lowest aligned span in the window
      * (the prefetchable window hosts only the GPU BAR1 on these hosts) */
-    if ((b1base & (REBAR_WANT - 1)) == 0 && b1base + REBAR_WANT - 1 <= wlim) {
+    if ((b1base & (want - 1)) == 0 && b1base + want - 1 <= wlim) {
         cand = b1base;
     } else {
-        cand = (wbase + REBAR_WANT - 1) & ~(REBAR_WANT - 1);
-        if (cand + REBAR_WANT - 1 > wlim) {
-            Print(L"[rebar] no 16 GiB-aligned span in window — skip\n");
+        cand = (wbase + want - 1) & ~(want - 1);
+        if (cand + want - 1 > wlim) {
+            Print(L"[rebar] no %d GiB-aligned span in window — skip\n",
+                  (INT32)(want >> 30));
             return;
         }
         Print(L"[rebar] relocating BAR1 0x%llx -> 0x%llx\n", b1base, cand);
     }
 
-    /* activate: CYA unlock + selector 8, verified by readback */
+    /* activate: CYA unlock + size selector, verified by readback */
     mmio_write32(XVE_CYA_OFF, 0x30U);
-    mmio_write32(XVE_CFG_OFF, (cfg & ~XVE_CFG_SEL_MASK) | XVE_CFG_ENABLE | 8U);
+    mmio_write32(XVE_CFG_OFF, (cfg & ~XVE_CFG_SEL_MASK) | XVE_CFG_ENABLE | selector);
     if ((mmio_read32(XVE_CFG_OFF) & (XVE_CFG_ENABLE | XVE_CFG_SEL_MASK))
-        != (XVE_CFG_ENABLE | 8U)) {
+        != (XVE_CFG_ENABLE | selector)) {
         Print(L"[rebar] XVE readback failed (cfg now 0x%08x) — revert\n",
               mmio_read32(XVE_CFG_OFF));
         u40x_rebar_revert(cfg, cya, cmd, b1lo, b1hi);
@@ -4327,9 +4350,9 @@ u40x_rebar_try16g(VOID)
     rebar_wr(0x18, 0xFFFFFFFFU);
     rlo = rebar_rd(0x14);
     rhi = rebar_rd(0x18);
-    if (rlo != 0xFFFFFFFCU || rhi != 0x00000003U) {
-        Print(L"[rebar] size probe 0x%08x/0x%08x (want FFFFFFFC/00000003)"
-              L" — revert\n", rlo, rhi);
+    if (rlo != 0xFFFFFFFCU || rhi != (UINT32)((want - 1) >> 32)) {
+        Print(L"[rebar] size probe 0x%08x/0x%08x (want FFFFFFFC/%08x)"
+              L" — revert\n", rlo, rhi, (UINT32)((want - 1) >> 32));
         u40x_rebar_revert(cfg, cya, cmd, b1lo, b1hi);
         return;
     }
@@ -4341,7 +4364,7 @@ u40x_rebar_try16g(VOID)
     {
         UINT32 vlo = rebar_rd(0x14), vhi = rebar_rd(0x18);
         volatile UINT32 *p0 = (volatile UINT32 *)(UINTN)cand;
-        volatile UINT32 *p1 = (volatile UINT32 *)(UINTN)(cand + REBAR_WANT / 2);
+        volatile UINT32 *p1 = (volatile UINT32 *)(UINTN)(cand + want / 2);
         UINT32 v0 = *p0, v1 = *p1;
         if ((((UINT64)(vlo & 0xFFFFFFF0U)) | ((UINT64)vhi << 32)) != cand ||
             (v0 == 0xFFFFFFFFU && v1 == 0xFFFFFFFFU)) {
@@ -4350,10 +4373,10 @@ u40x_rebar_try16g(VOID)
             u40x_rebar_revert(cfg, cya, cmd, b1lo, b1hi);
             return;
         }
-        Print(L"[rebar] aperture ok: [+0]=0x%08x [+8G]=0x%08x\n", v0, v1);
+        Print(L"[rebar] aperture ok: [+0]=0x%08x [+mid]=0x%08x\n", v0, v1);
     }
-    Print(L"[rebar] BAR1 16 GiB active @ 0x%llx (was 0x%llx) — lucky!\n",
-          cand, b1base);
+    Print(L"[rebar] BAR1 %d GiB active @ 0x%llx (was 0x%llx) — lucky!\n",
+          (INT32)(want >> 30), cand, b1base);
 }
 
 /* ===== v55 主entry（DIRECT_SEC2，40HX） ===== */
@@ -4652,9 +4675,14 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
 done:
     dump_regs(L"[v55 final]");
-    /* ---------- [11] best-effort ReBAR (16 GiB BAR1); reverts on any
-     * failed check — see u40x_rebar_try16g ---------- */
-    u40x_rebar_try16g();
+    /* ---------- [11] best-effort ReBAR (BAR1); reverts on any failed
+     * check — see u40x_rebar_try ---------- */
+    if (u40x_rebar32(ImageHandle)) {
+        Print(L"[rebar] rebar=32g: attempting 32 GiB BAR1 (issue #47)\n");
+        u40x_rebar_try(0x800000000ULL, 9U);
+    } else {
+        u40x_rebar_try(0x400000000ULL, 8U);
+    }
     /* v71fix: 黑屏很久+driver掉根因 = return firmware → BDS 重跑 POST →
      * GPU 重新initialize/unlock 丢失。改用黑盒式链载（chainload_preloaded：
      * preload bootmgfw → LoadImage → StartImage → SFS fallback），
