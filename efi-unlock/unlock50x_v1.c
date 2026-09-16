@@ -17,9 +17,10 @@
  *   - step [8b] runs the manual FWSEC boot only when WPR2 is down after
  *     the GFW kill: on CMP 50HX the VBIOS POST already latched WPR2
  *     (live dmesg FWSEC_COMPLETE_GSP_UNTOUCHED / WPR=027fee00:027fe000);
- *   - chainload ladder targets Linux (Ubuntu shim/grub, systemd-boot,
- *     generic \EFI\BOOT) instead of bootmgfw.efi, never chainloads itself,
- *     and falls back to returning to firmware (BDS continues BootOrder).
+ *   - chainload ladder targets Linux (Proxmox/Ubuntu shim/grub,
+ *     systemd-boot, generic \EFI\BOOT) and Windows bootmgfw.efi, never
+ *     chainloads itself, and falls back to returning to firmware
+ *     (BDS continues BootOrder).
  *   - optional --return-to-grub load option skips that ladder and returns
  *     EFI_SUCCESS to the caller, allowing GRUB to chainload the OS next.
  *
@@ -33,7 +34,8 @@
  *   with no POST in between.
  *
  * Build flags: DIRECT_SEC2 RELEASE_BUILD VBIOS_DUMP (see build.sh).
- * Runtime messages keep the original Russian wording where inherited.
+ * Runtime messages are English-only: the UEFI console has no Cyrillic
+ * font, and Russian strings rendered as boxes in user logs.
  */
 
 #include <efi.h>
@@ -953,7 +955,7 @@ find_bridge_to(UINTN target_bus, UINTN *ob, UINTN *od, UINTN *of)
     UINTN ri, ci, b, d, f;
     rb_collect();
     if (!gRbAllN) {
-        Print(L"gen2: нет ни одного root bridge!\n");
+        Print(L"gen2: no root bridge found!\n");
         return FALSE;
     }
     Print(L"gen2: probe 00:01.0=%08x 00:1c.0=%08x (%d RB)\n",
@@ -1037,7 +1039,7 @@ alloc_fwsec_buffer(UINTN Pages, EFI_PHYSICAL_ADDRESS *Phys)
                                EfiReservedMemoryType, Pages, Phys);
         if (!EFI_ERROR(st)) {
             cmp90_next_high_slot = *Phys + ((UINT64)Pages << 12) + 0x1000000ULL;
-            Print(L"alloc_high: OK @0x%lx (%d стр)\n", *Phys, (UINT32)Pages);
+            Print(L"alloc_high: OK @0x%lx (%d pages)\n", *Phys, (UINT32)Pages);
             return EFI_SUCCESS;
         }
     }
@@ -1049,12 +1051,12 @@ alloc_fwsec_buffer(UINTN Pages, EFI_PHYSICAL_ADDRESS *Phys)
             *Phys = cand[i];
             if (!EFI_ERROR(uefi_call_wrapper(BS->AllocatePages, 4, AllocateAddress,
                                              EfiReservedMemoryType, Pages, Phys))) {
-                Print(L"alloc_high: OK (статик) @0x%lx\n", *Phys);
+                Print(L"alloc_high: OK (static) @0x%lx\n", *Phys);
                 return EFI_SUCCESS;
             }
         }
     }
-    Print(L"alloc_high: выше 4ГБ не вышло — фолбэк ниже 4ГБ\n");
+    Print(L"alloc_high: above 4GB failed - falling back below 4GB\n");
     return alloc_below_4g(Pages, Phys);
 }
 
@@ -1065,10 +1067,10 @@ static void
 enable_mem_decode(void)
 {
     UINT32 cmd = cfg_read32(0x04);
-    Print(L"cfg 0x04 (command) до  = 0x%08x\n", cmd);
+    Print(L"cfg 0x04 (command) before= 0x%08x\n", cmd);
     cfg_write32(0x04, cmd | 0x6);   /* bit1=Memory Space, bit2=Bus Master */
     cmd = cfg_read32(0x04);
-    Print(L"cfg 0x04 (command) после = 0x%08x\n", cmd);
+    Print(L"cfg 0x04 (command) after = 0x%08x\n", cmd);
 }
 
 /* ==== Quick state snapshot + "already unlocked" check ==== */
@@ -1100,9 +1102,9 @@ static void
 pause_screen(EFI_SYSTEM_TABLE *ST)
 {
 #if defined(EFI_AUTOTEST) || defined(RELEASE_BUILD)
-    Print(L"[паузы отключены]\n");
+    Print(L"[pauses disabled]\n");
 #else
-    Print(L"\n[Enter] — дальше...\n");
+    Print(L"\n[Enter] - continue...\n");
     uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
     WaitForSingleEvent(ST->ConIn->WaitForKey, 0);
     uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
@@ -1133,7 +1135,7 @@ diag_regs(EFI_SYSTEM_TABLE *ST)
     diag_one(L"SEC2_FBIF_CTL", 0x840624);
     pause_screen(ST);
 
-    Print(L"--- DIAG v2.10 GSP (только чтения) ---\n");
+    Print(L"--- DIAG v2.10 GSP (read-only) ---\n");
     diag_one(L"GSP_MBOX0", 0x110040);
     diag_one(L"GSP_MBOX1", 0x110044);
     diag_one(L"GSP_CPUCTL", 0x110100);
@@ -1146,7 +1148,7 @@ diag_regs(EFI_SYSTEM_TABLE *ST)
     diag_one(L"SS0", REG_FEAT_OVR_SM_SPD);
     diag_one(L"SS1", REG_FEAT_OVR_SM_SPD_1);
     diag_one(L"GFW", REG_GFW_BOOT_OK);
-    Print(L"--- DIAG v2.10 ЗАВЕРШЕНА ---\n");
+    Print(L"--- DIAG v2.10 DONE ---\n");
     pause_screen(ST);
 }
 
@@ -1160,7 +1162,7 @@ static BOOLEAN set_bootnext_windows(void)
     static EFI_GUID gvGuid = EFI_GLOBAL_VARIABLE;
     UINT16 opt;
 
-    Print(L"v2.90-WR: скан Boot#### (Windows Boot Manager)...\n");
+    Print(L"v2.90-WR: scanning Boot#### (Windows Boot Manager)...\n");
     for (opt = 0; opt < 0xFFFF; opt++) {
         CHAR16 name[12];
         static UINT8 buf[2048];
@@ -1173,14 +1175,14 @@ static BOOLEAN set_bootnext_windows(void)
                                &attr, &sz, buf);
         /* v2.99o: прогресс каждые 256 слотов — видно, где застряли */
         if ((opt & 0xFF) == 0)
-            Print(L"v2.90-WR: скан %04X...\n", opt);
+            Print(L"v2.90-WR: scan %04X...\n", opt);
         if (EFI_ERROR(st) || sz < 6) continue;
         {
             /* EFI_LOAD_OPTION: u32 Attributes, u16 FilePathListLength,
              * Description (CHAR16, NUL-терминированная) */
             CHAR16 *desc = (CHAR16 *)(buf + 6);
             if (cmp90_eqi(desc, L"Windows Boot Manager")) {
-                Print(L"v2.90-WR: найден Boot%04X, пишу BootNext...\n", opt);
+                Print(L"v2.90-WR: found Boot%04X, writing BootNext...\n", opt);
                 st = uefi_call_wrapper(RT->SetVariable, 6, L"BootNext", &gvGuid,
                     EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS |
                     EFI_VARIABLE_RUNTIME_ACCESS, 2, &opt);
@@ -1190,7 +1192,7 @@ static BOOLEAN set_bootnext_windows(void)
             }
         }
     }
-    Print(L"v2.90-WR: Boot#### с Windows Boot Manager не найден\n");
+    Print(L"v2.90-WR: Boot#### with Windows Boot Manager not found\n");
     return FALSE;
 }
 #endif
@@ -1215,7 +1217,7 @@ set_gpu_time(void)
     else
     {
         /* RTC мёртв/не задан в EFI-контексте → константа 2026-08-19 00:00 UTC */
-        Print(L"time: GetTime недоступен/мусор — константа 2026-08-19\n");
+        Print(L"time: GetTime unavailable/garbage - constant 2026-08-19\n");
         t.Year = 2026; t.Month = 8; t.Day = 19;
         t.Hour = 0; t.Minute = 0; t.Second = 0;
     }
@@ -1291,7 +1293,7 @@ falcon_wait_scrub_done(UINT32 dmactlReg, UINT32 hwcfg2Reg, const CHAR16 *tag)
         }
         uefi_call_wrapper(BS->Stall, 1, 100);
     }
-    Print(L"%s: scrub-wait ТАЙМАУТ dmactl=0x%08x hwcfg2=0x%08x\n", tag, dct, hcfg);
+    Print(L"%s: scrub-wait TIMEOUT dmactl=0x%08x hwcfg2=0x%08x\n", tag, dct, hcfg);
     return FALSE;
 }
 
@@ -1340,7 +1342,7 @@ gsp_engine_reset(void)
 {
     UINTN i;
 
-    Print(L"gsp: ENGINE reset (0x1103C0) — убиваю GFW из POST...\n");
+    Print(L"gsp: ENGINE reset (0x1103C0) - killing GFW from POST...\n");
     mmio_write32(GSP_ENGINE, NV_PFALCON_FALCON_ENGINE_RESET_TRUE);
     for (i = 0; i < 16; i++) mmio_read32(GSP_ENGINE);
     mmio_write32(GSP_ENGINE, 0);
@@ -1629,7 +1631,7 @@ cmp90_meta_low(UINT64 wprMetaPhys)
 {
     if (cmp90_metaLowPhys == 0) {
         if (EFI_ERROR(alloc_below_4g(1, &cmp90_metaLowPhys))) {
-            Print(L"meta-low: alloc FAIL — использую оригинал\n");
+            Print(L"meta-low: alloc FAIL - using original\n");
             return wprMetaPhys;
         }
     }
@@ -1724,7 +1726,7 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
         data = mmio_read32(0x84001C);   /* SEC2 HWCFG2 */
         if (data & 0x80000000) break;
         if (i == 99999)
-            Print(L"booter: ВНИМАНИЕ RESET_READY не пришёл (HWCFG2=0x%08x)\n", data);
+            Print(L"booter: WARNING RESET_READY did not arrive (HWCFG2=0x%08x)\n", data);
     }
     Print(L"booter: SEC2 HWCFG2=0x%08x (RESET_READY=bit31)\n", data);
 
@@ -1744,16 +1746,16 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
     uefi_call_wrapper(BS->Stall, 1, 10000);
 
     data = mmio_read32(SEC2_CPUCTL);
-    Print(L"booter: CPUCTL после BCR=0 = 0x%08x (0xBADF = lockdown не снят)\n", data);
+    Print(L"booter: CPUCTL after BCR=0 = 0x%08x (0xBADF = lockdown not lifted)\n", data);
     if ((data & 0xBADF0000) == 0xBADF0000) {
         /* запасной вариант: BCR=0x1 (как в v2.12 — тоже снимал lockdown) */
-        Print(L"booter: пробую BCR=0x1...\n");
+        Print(L"booter: trying BCR=0x1...\n");
         mmio_write32(SEC2_BCR_CTRL, 0x1);
         uefi_call_wrapper(BS->Stall, 1, 10000);
         data = mmio_read32(SEC2_CPUCTL);
-        Print(L"booter: CPUCTL после BCR=1 = 0x%08x\n", data);
+        Print(L"booter: CPUCTL after BCR=1 = 0x%08x\n", data);
         if ((data & 0xBADF0000) == 0xBADF0000) {
-            Print(L"booter: SEC2 lockdown НЕ снят — прерываю booter load\n");
+            Print(L"booter: SEC2 lockdown NOT lifted - aborting booter load\n");
             return EFI_DEVICE_ERROR;
         }
     }
@@ -1772,12 +1774,12 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
      * booter load драйвер имеет WPR2=0x27FE00000 (сырые: lo=0x027fe000,
      * hi=0x027fee00 — из FRTS_DIAG живой системы). У нас после POST
      * WPR2=0x1FFFFE00 — booter может валидировать WPR2 и выходить. */
-    Print(L"booter: WPR2 до записи: lo=0x%08x hi=0x%08x\n",
+    Print(L"booter: WPR2 before write: lo=0x%08x hi=0x%08x\n",
           mmio_read32(REG_PFB_MMU_WPR2_LO), mmio_read32(REG_PFB_MMU_WPR2_HI));
     mmio_write32(REG_PFB_MMU_WPR2_LO, 0x027fe000);
     mmio_write32(REG_PFB_MMU_WPR2_HI, 0x027fee00);
     uefi_call_wrapper(BS->Stall, 1, 10000);
-    Print(L"booter: WPR2 после записи: lo=0x%08x hi=0x%08x (не изменились = заблокировано)\n",
+    Print(L"booter: WPR2 after write: lo=0x%08x hi=0x%08x (unchanged = locked)\n",
           mmio_read32(REG_PFB_MMU_WPR2_LO), mmio_read32(REG_PFB_MMU_WPR2_HI));
 
     /* kflcnDisableCtxReq: FBIF_CTL ALLOW_PHYS_NO_CTX + DMACTL=0 */
@@ -1786,13 +1788,13 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
     mmio_write32(SEC2_FBIF_CTL, data);
     data = mmio_read32(SEC2_FBIF_CTL);
     if ((data & 0xBADF0000) == 0xBADF0000)
-        Print(L"booter: ВНИМАНИЕ FBIF_CTL всё ещё залочен (0x%08x)\n", data);
+        Print(L"booter: WARNING FBIF_CTL still locked (0x%08x)\n", data);
     mmio_write32(SEC2_DMACTL, 0);
 
     /* v2.41: RM = chipId0 — из ТРЕЙСА драйвера: 0xb72000a1 (НЕ PMC_BOOT_0!).
      * kflcnReset_TU102: kflcnRegWrite(RM, pGpu->chipId0). */
     mmio_write32(SEC2_RM, 0xb72000a1);
-    Print(L"booter: RM записан = 0xb72000a1 (chipId0 из трейса драйвера)\n");
+    Print(L"booter: RM written = 0xb72000a1 (chipId0 from driver trace)\n");
 
     /* TRANSCFG(0): TARGET=COHERENT_SYSMEM(1) | MEM_TYPE=PHYSICAL(1<<2)
      * (нужен и для внутреннего DMA booter'а при чтении WPR meta) */
@@ -1804,25 +1806,25 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
      * передал» (IMEM=DEAD5EC1 через НЕ-secure порт) — но SEC=1 передача
      * могла писать в SECURE IMEM (невидимый не-secure чтению), а блобы тогда
      * были мусором (до --redefine-sym). Теперь блобы настоящие. */
-    Print(L"booter: DMATRFBASE до = 0x%08x\n", mmio_read32(SEC2_DMATRFBASE));
+    Print(L"booter: DMATRFBASE before = 0x%08x\n", mmio_read32(SEC2_DMATRFBASE));
     mmio_write32(SEC2_DMATRFBASE, 0xDEADBEEF);
-    Print(L"booter: DMATRFBASE после = 0x%08x (DEADBEEF = пишется; 0xBADF = залочен)\n",
+    Print(L"booter: DMATRFBASE after = 0x%08x (DEADBEEF = writable; 0xBADF = locked)\n",
           mmio_read32(SEC2_DMATRFBASE));
 
     /* v2.71b comment retained; v55: TU102 (nv616) geometry replaces the GA102
      * numbers here — see BOOTER_* defines above. IMEM = image[0x100..0x8500)
      * (0x8400 B, SEC=1), DMEM = image[0x8500..0xE700) (0x6200 B, SEC=0);
      * signature patch site image[0x8700] lands on DMEM[0x200]=hsSigDmemAddr. */
-    Print(L"booter: DMA IMEM SEC=1 (dest=0, src+0x100, 0x8400 байт)...\n");
+    Print(L"booter: DMA IMEM SEC=1 (dest=0, src+0x100, 0x8400 bytes)...\n");
     falcon_dma_transfer(0, BOOTER_APP_CODE_OFFSET, ucodePhys,
                         BOOTER_APP_CODE_SIZE,
                         0 | (6 << 8) | (0 << 12) | (1 << 4) | (1 << 2));
-    Print(L"booter: DMA DMEM SEC=0 (dest=0, src+0x8500, 0x6200 байт)...\n");
+    Print(L"booter: DMA DMEM SEC=0 (dest=0, src+0x8500, 0x6200 bytes)...\n");
     falcon_dma_transfer(0, 0, ucodePhys + BOOTER_OS_DATA_OFFSET,
                         BOOTER_OS_DATA_SIZE,
                         0 | (6 << 8) | (0 << 12));
     mmio_write32(SEC2_DMEMC0, BOOTER_HS_SIG_DMEM_ADDR);
-    Print(L"booter: DMEM[0x%x]=0x%08x (ожидаю sig @image+0x%x = 0x%08x)\n",
+    Print(L"booter: DMEM[0x%x]=0x%08x (expecting sig @image+0x%x = 0x%08x)\n",
           BOOTER_HS_SIG_DMEM_ADDR, mmio_read32(SEC2_DMEMD0),
           BOOTER_SIG_PATCH_LOC,
           *(UINT32*)((UINTN)ucodePhys + BOOTER_SIG_PATCH_LOC));
@@ -1972,20 +1974,20 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
 #undef CMP90_DREAD
 
         elapsed = cmp90_ptimer64() - t0;
-        Print(L"booter: hist %u записей за %u.%03u мс, iters=%u (%s)\n",
+        Print(L"booter: hist %u entries in %u.%03u ms, iters=%u (%s)\n",
               (UINT32)hist_n,
               (UINT32)(elapsed / 1000000ULL),
               (UINT32)((elapsed / 1000ULL) % 1000ULL),
               (UINT32)it,
-              plmOpen ? L"PLM OPEN" : halted ? L"HALT" : L"таймаут 5с");
+              plmOpen ? L"PLM OPEN" : halted ? L"HALT" : L"timeout 5s");
         for (j = 0; j < hist_n; j++) {
             UINT64 tj = ((UINT64)hist[j].t_hi << 32) | hist[j].t_lo;
             UINT64 d = tj - t0;
             if (hist_n > 240 && j == 120) {
-                Print(L"  ... пропущено %u записей ...\n", (UINT32)(hist_n - 240));
+                Print(L"  ... skipped %u entries ...\n", (UINT32)(hist_n - 240));
                 j = hist_n - 121;   /* после j++ продолжим с n-120 */
             }
-            Print(L"  hist[%03u] +%u.%03uмс cpu=0x%08x irq=0x%08x dbg=0x%08x "
+            Print(L"  hist[%03u] +%u.%03ums cpu=0x%08x irq=0x%08x dbg=0x%08x "
                   L"m0=0x%08x w2=0x%08x dma=0x%08x gsp=0x%08x "
                   L"d[ff4c]=%08x d[ff50]=%08x d[10]=%08x\n",
                   (UINT32)j,
@@ -1995,7 +1997,7 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
                   hist[j].gspmbox0, hist[j].dFF4c, hist[j].dFF50,
                   hist[j].d10);
         }
-        Print(L"booter: финал: cpu=0x%x irq=0x%x dbg=0x%x m0=0x%08x m1=0x%08x\n",
+        Print(L"booter: final: cpu=0x%x irq=0x%x dbg=0x%x m0=0x%08x m1=0x%08x\n",
               mmio_read32(SEC2_CPUCTL), mmio_read32(SEC2_IRQSTAT),
               mmio_read32(SEC2_DEBUGINFO),
               mmio_read32(SEC2_MAILBOX0), mmio_read32(SEC2_MAILBOX1));
@@ -2051,7 +2053,7 @@ booter_load_v67(UINT64 wprMetaPhys, UINT64 ucodePhys)
               mmio_read32(NV_FALCON2_SEC_BASE + 0x668));
         rdidx = mmio_read32(NV_FALCON2_SEC_BASE + 0x404) & 0xFF;
         wtidx = mmio_read32(NV_FALCON2_SEC_BASE + 0x408) & 0xFF;
-        Print(L"booter: trace rdidx=%d wtidx=%d (0xBADF = riscv блок залочен)\n",
+        Print(L"booter: trace rdidx=%d wtidx=%d (0xBADF = riscv block locked)\n",
               rdidx, wtidx);
         for (t = 0; t < 16; t++) {
             UINT32 idx = (wtidx + 0x100 - t) & 0xFF;
@@ -2374,7 +2376,7 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
     }
 
     /* ---------- 2. cmd_in буфер @0x23D0 (не-secure!) ← FRTS cmd ---------- */
-    Print(L"[5] cmd_in @0x23D0 <- FRTS cmd (44Б, явная адресация)...\n");
+    Print(L"[5] cmd_in @0x23D0 <- FRTS cmd (44B, explicit addressing)...\n");
     for (i = 0; i < 11; i++) {
         mmio_write32(SEC2_DMEMC0, 0x23D0 + i * 4);
         mmio_write32(SEC2_DMEMD0, frtsCmd[i]);
@@ -2393,7 +2395,7 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
     mmio_write32(SEC2_DMEMC0, 0x6C4);
     Print(L"[5]   ns =0x%08x", mmio_read32(SEC2_DMEMD0));
     mmio_write32(SEC2_DMEMC0, 0x6C4 | (1 << 28));
-    Print(L" sec=0x%08x (0x15 = порт пишет secure-зону!)\n", mmio_read32(SEC2_DMEMD0));
+    Print(L" sec=0x%08x (0x15 = port writes the secure zone!)\n", mmio_read32(SEC2_DMEMD0));
 
     /* ---------- 4. BROM params + STARTCPU (ucodeId=10, как стадия 4) ----- */
     mmio_write32(SEC2_BROM_PARAADDR0, 0x6DC);
@@ -2408,13 +2410,13 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
     __asm__ volatile("wbinvd" ::: "memory");
     mmio_write32(SEC2_CPUCTL, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
 
-    Print(L"[5] STARTCPU (ucodeId=10), polling WPR2 до 5с (FRTS)...\n");
+    Print(L"[5] STARTCPU (ucodeId=10), polling WPR2 up to 5s (FRTS)...\n");
     for (p = 0; p < 5000; p++) {
         UINT32 lo = mmio_read32(REG_PFB_MMU_WPR2_LO);
         UINT32 hi = mmio_read32(REG_PFB_MMU_WPR2_HI);
         if ((lo & 0xFFFFFFF0) == 0x027FE000 && (hi & 0xFFFFFFF0) == 0x027FEE00) {
-            Print(L"[5] *** WPR2 УСТАНОВЛЕН lo=0x%08x hi=0x%08x после %d ms — "
-                  L"SEC2 ucode выполнил FRTS! ***\n", lo, hi, p);
+            Print(L"[5] *** WPR2 UP lo=0x%08x hi=0x%08x after %d ms - "
+                  L"SEC2 ucode executed FRTS! ***\n", lo, hi, p);
             wpr2set = TRUE;
             break;
         }
@@ -2424,8 +2426,8 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
                   mmio_read32(SEC2_BCR_CTRL));
         uefi_call_wrapper(BS->Stall, 1, 1000);
     }
-    Print(L"[5] FRTS итог: WPR2=%s lo=0x%08x hi=0x%08x cpu=0x%x dbg=0x%x\n",
-          wpr2set ? L"УСТАНОВЛЕН" : L"НЕТ",
+    Print(L"[5] FRTS result: WPR2=%s lo=0x%08x hi=0x%08x cpu=0x%x dbg=0x%x\n",
+          wpr2set ? L"UP" : L"NO",
           mmio_read32(REG_PFB_MMU_WPR2_LO), mmio_read32(REG_PFB_MMU_WPR2_HI),
           mmio_read32(SEC2_CPUCTL), mmio_read32(SEC2_DEBUGINFO));
     /* cmd_out @0x2410 — ucode пишет сюда результат команды (диагностика) */
@@ -2438,7 +2440,7 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
     dump_regs(L"[5-frts]");
 
     /* ---------- 5. SB (init_cmd=0x19 + cmd @0x23D0) ---------- */
-    Print(L"[5] SB: init_cmd=0x19 @0x6C4, cmd 24Б @0x23D0...\n");
+    Print(L"[5] SB: init_cmd=0x19 @0x6C4, cmd 24B @0x23D0...\n");
     /* cmd_in <- SB cmd (readVbiosDesc) */
     for (i = 0; i < 6; i++) {
         mmio_write32(SEC2_DMEMC0, 0x23D0 + i * 4);
@@ -2457,12 +2459,12 @@ sec2_ucode_mapper_cmd(UINT64 wprMetaPhys)
         privA = mmio_read32(0x00118128);
         sbChanged = (privA != priv0);
         Print(L"[5] SB (0x19): privmask 0x%08x -> 0x%08x%s\n",
-              priv0, privA, sbChanged ? L" <<< ИЗМЕНЕНИЕ (SB сработал!)" : L"");
+              priv0, privA, sbChanged ? L" <<< CHANGED (SB fired!)" : L"");
     }
     dump_regs(L"[5-sb]");
 
-    Print(L"[5] итог: WPR2=%s SB=%s PLM=0x%08x\n",
-          wpr2set ? L"OK" : L"нет", sbChanged ? L"OK" : L"нет",
+    Print(L"[5] result: WPR2=%s SB=%s PLM=0x%08x\n",
+          wpr2set ? L"OK" : L"no", sbChanged ? L"OK" : L"no",
           mmio_read32(REG_FEAT_OVR_PLM));
 
     return wpr2set || sbChanged || is_unlocked();
@@ -2538,7 +2540,7 @@ static void
 probe_preload(void)
 {
     UINTN i;
-    Print(L"\n=== v2.57-4: ЗОНД ПРЕДЗАГРУЗКИ (IMEM/DMEM GSP+SEC2, NS|SEC) ===\n");
+    Print(L"\n=== v2.57-4: PRELOAD PROBE (GSP+SEC2 IMEM/DMEM, NS|SEC) ===\n");
     Print(L"[pre] GSP IMEM[0x00..0x2F]:\n");
     for (i = 0; i < 0x30; i += 4) {
         UINT32 vn, vs;
@@ -2595,30 +2597,30 @@ direct_write_probe(void)
 {
     UINT32 v;
 
-    Print(L"\n--- v2.26: ПРЯМАЯ запись FEAT_OVR (host probe) ---\n");
+    Print(L"\n--- v2.26: direct FEAT_OVR write (host probe) ---\n");
     mmio_write32(REG_FEAT_OVR_PLM, VAL_PLM_OPEN);
     v = mmio_read32(REG_FEAT_OVR_PLM);
-    Print(L"probe: PLM=0x%08x после записи 0xFFFFFFFF (0xFFFFFF8F = запись игнор)\n", v);
+    Print(L"probe: PLM=0x%08x after writing 0xFFFFFFFF (0xFFFFFF8F = write ignored)\n", v);
 
     mmio_write32(REG_FEAT_OVR_SM_SPD, VAL_SS0_UNLOCKED);
     mmio_write32(REG_FEAT_OVR_SM_SPD_1, VAL_SS1_UNLOCKED);
-    Print(L"probe: SS0=0x%08x SS1=0x%08x после записи 0x88888888/0x8\n",
+    Print(L"probe: SS0=0x%08x SS1=0x%08x after writing 0x88888888/0x8\n",
           mmio_read32(REG_FEAT_OVR_SM_SPD), mmio_read32(REG_FEAT_OVR_SM_SPD_1));
 
     if (is_unlocked()) {
-        Print(L"probe: *** ПРЯМЫЕ ЗАПИСИ РАБОТАЮТ — GPU открыт без booter ***\n");
+        Print(L"probe: *** DIRECT WRITES WORK - GPU open without booter ***\n");
         return TRUE;
     }
 
-    Print(L"probe: диагностика (регистр закрыт?):\n");
+    Print(L"probe: diagnostics (register locked?):\n");
     mmio_write32(REG_FEAT_OVR_PLM, 0x00000000);
-    Print(L"probe:   PLM=0x%08x после 0x0 (закрыть)\n", mmio_read32(REG_FEAT_OVR_PLM));
+    Print(L"probe:   PLM=0x%08x after 0x0 (close)\n", mmio_read32(REG_FEAT_OVR_PLM));
     mmio_write32(REG_FEAT_OVR_PLM, 0xFFFFFFFE);
-    Print(L"probe:   PLM=0x%08x после 0xFFFFFFFE (bit0 flip)\n", mmio_read32(REG_FEAT_OVR_PLM));
+    Print(L"probe:   PLM=0x%08x after 0xFFFFFFFE (bit0 flip)\n", mmio_read32(REG_FEAT_OVR_PLM));
     mmio_write32(REG_FEAT_OVR_SM_SPD, 0x11111111);
-    Print(L"probe:   SS0=0x%08x после 0x11111111\n", mmio_read32(REG_FEAT_OVR_SM_SPD));
+    Print(L"probe:   SS0=0x%08x after 0x11111111\n", mmio_read32(REG_FEAT_OVR_SM_SPD));
     mmio_write32(REG_FEAT_OVR_SM_SPD_1, 0x00000000);
-    Print(L"probe:   SS1=0x%08x после 0x0\n", mmio_read32(REG_FEAT_OVR_SM_SPD_1));
+    Print(L"probe:   SS1=0x%08x after 0x0\n", mmio_read32(REG_FEAT_OVR_SM_SPD_1));
     return FALSE;
 }
 
@@ -2644,7 +2646,7 @@ riscv_direct_start(void)
     static const UINT32 try_vec[] = { 0x100, 0x000, 0x100, 0x000 };
     static const UINT32 try_cpu[] = {    0,    0,    1,    1 };
 
-    Print(L"\n--- v2.25: ПРЯМОЙ запуск RISC-V (обход BROM) ---\n");
+    Print(L"\n--- v2.25: direct RISC-V start (BROM bypass) ---\n");
     for (a = 0; a < 4; a++) {
         UINT32 cpuAddr = try_cpu[a] ? (NV_FALCON2_SEC_BASE + 0x388) : SEC2_CPUCTL;
         UINTN  p;
@@ -2658,7 +2660,7 @@ riscv_direct_start(void)
         bcrNow = mmio_read32(SEC2_BCR_CTRL);
         mmio_write32(SEC2_BOOTVEC, try_vec[a]);
         mmio_write32(cpuAddr, NV_PFALCON_FALCON_CPUCTL_STARTCPU_TRUE);
-        Print(L"riscv: попытка %d: BCR=0x%x (читается 0x%x) BOOTVEC=0x%x cpu=0x%x STARTCPU\n",
+        Print(L"riscv: attempt %d: BCR=0x%x (reads 0x%x) BOOTVEC=0x%x cpu=0x%x STARTCPU\n",
               (INTN)a + 1, try_bcr[a], bcrNow, try_vec[a], cpuAddr);
 
         for (p = 0; p < 4; p++) {   /* 4 × 500мс = 2с */
@@ -2699,10 +2701,10 @@ gsp_mailbox_booter_load(UINT64 wprMetaPhys)
         if (st == 0x65 || st == 0x55) break;
         uefi_call_wrapper(BS->Stall, 1, 1000);
     }
-    Print(L"gspmail: init -> status 0x%08x через %d ms (mbox0=0x%x mbox1=0x%x)\n",
+    Print(L"gspmail: init -> status 0x%08x after %d ms (mbox0=0x%x mbox1=0x%x)\n",
           st, i, mmio_read32(0x110040), mmio_read32(0x110044));
     if (st != 0x65 && st != 0x55)
-        Print(L"gspmail: ВНИМАНИЕ — статус init не 0x65/0x55\n");
+        Print(L"gspmail: WARNING - init status not 0x65/0x55\n");
 
     /* 0x57c — booter load (V67-сигнатура в WPR meta) */
     Print(L"gspmail: cmd 0x57c (booter load, V67)...\n");
@@ -2713,7 +2715,7 @@ gsp_mailbox_booter_load(UINT64 wprMetaPhys)
         if (mmio_read32(REG_FEAT_OVR_PLM) == VAL_PLM_OPEN) break;
         uefi_call_wrapper(BS->Stall, 1, 1000);
     }
-    Print(L"gspmail: load -> status 0x%08x через %d ms (mbox0=0x%x mbox1=0x%x PLM=0x%x)\n",
+    Print(L"gspmail: load -> status 0x%08x after %d ms (mbox0=0x%x mbox1=0x%x PLM=0x%x)\n",
           st, i, mmio_read32(0x110040), mmio_read32(0x110044),
           mmio_read32(REG_FEAT_OVR_PLM));
 
@@ -2742,7 +2744,7 @@ do_flr(void)
         }
         capPtr = (hdr >> 8) & 0xFF;
     }
-    Print(L"FLR: PCIe capability не найден\n");
+    Print(L"FLR: PCIe capability not found\n");
     return EFI_NOT_FOUND;
 }
 
@@ -2840,7 +2842,7 @@ pcie_gen_unlock_debug(UINT64 wprMetaPhys, UINT64 ucodePhys, UINT64 v67Phys)
     UINT32 v;
     EFI_STATUS st;
 
-    Print(L"\n=== pcie-gen: разблокировка PCIe Gen%d (v2.97 booter-write) ===\n",
+    Print(L"\n=== pcie-gen: PCIe Gen%d unlock (v2.97 booter-write) ===\n",
           PCIE_GEN_TARGET);
     pcie_gen_fails = 0;
     pcie_gen_status(L"pre ");
@@ -2861,7 +2863,7 @@ pcie_gen_unlock_debug(UINT64 wprMetaPhys, UINT64 ucodePhys, UINT64 v67Phys)
         Print(L"pcie-gen: booter#2: %r, FUSE_OVR=0x%08x (want 0)\n",
               st, mmio_read32(PCIE_FUSE_OVERRIDE));
     } else {
-        Print(L"pcie-gen: v97: нет payload-контекста — booter-запись пропущена\n");
+        Print(L"pcie-gen: v97: no payload context - booter write skipped\n");
     }
 
     /* v2.93: дамп fuse-shadow страницы FEAT_OVR/OPT (родня PLM/SS0/SS1).
@@ -2961,15 +2963,15 @@ pcie_gen_unlock_debug(UINT64 wprMetaPhys, UINT64 ucodePhys, UINT64 v67Phys)
             Print(L"pcie-gen: host-cfg LNKCAP post=0x%08x (want max_speed=%d)\n",
                   cfg_read32(lnkcapOff), PCIE_GEN_TARGET);
         } else {
-            Print(L"pcie-gen: host-cfg: PCIe capability не найден\n");
+            Print(L"pcie-gen: host-cfg: PCIe capability not found\n");
         }
     }
 
-    Print(L"pcie-gen: LTSSM_OVR(0x8872c)=0x%08x (только чтение)\n",
+    Print(L"pcie-gen: LTSSM_OVR(0x8872c)=0x%08x (read-only)\n",
           mmio_read32(XVE_LTSSM_OVR));
 
     pcie_gen_status(L"post");
-    Print(L"pcie-gen: готово, fail=%d (ретрейн — при восстановлении линка после FLR)\n",
+    Print(L"pcie-gen: done, fail=%d (retrain - on link recovery after FLR)\n",
           pcie_gen_fails);
 }
 #endif /* PCIE_GEN_EXPERIMENT */
@@ -3010,7 +3012,7 @@ read_fwimage(EFI_HANDLE DeviceHandle, UINT8 **pOut, UINTN *pSize)
         FreePool(Info);
     }
     if (BufSize == 0 || BufSize > 0x6000000ULL) {  /* до 96MB */
-        Print(L"fw: подозрительный размер %d\n", BufSize);
+        Print(L"fw: suspicious size %d\n", BufSize);
         return EFI_LOAD_ERROR;
     }
 
@@ -3030,18 +3032,18 @@ read_fwimage(EFI_HANDLE DeviceHandle, UINT8 **pOut, UINTN *pSize)
                 return EFI_LOAD_ERROR;
             }
             if (rd == 0) {
-                Print(L"fw: EOF до конца файла (%d/%d)\n", total, BufSize);
+                Print(L"fw: EOF before end of file (%d/%d)\n", total, BufSize);
                 return EFI_LOAD_ERROR;
             }
             total += rd;
             if ((total & 0xFFFFFF) == 0 || total >= BufSize)
-                Print(L"fw: ... %d / %d МБ\n", (total >> 20), (BufSize >> 20));
+                Print(L"fw: ... %d / %d MB\n", (total >> 20), (BufSize >> 20));
         }
     }
     uefi_call_wrapper(File->Close, 1, File);
     *pOut = Buf;
     *pSize = BufSize;
-    Print(L"fw: прочитано %d байт gsp_ga10x.bin\n", BufSize);
+    Print(L"fw: read %d bytes gsp_ga10x.bin\n", BufSize);
     return EFI_SUCCESS;
 }
 
@@ -3061,7 +3063,7 @@ build_radix3(UINT8 *Buf, UINT64 physBase, const UINT8 *Data, UINT64 size)
     UINT64 off3 = (1ULL + n1 + n2) << RADIX_PAGE_LOG2;       /* данные */
     UINT64 i;
 
-    if (n1 != 1) { Print(L"radix3: n1=%d (ожидалось 1)\n", n1); return 0; }
+    if (n1 != 1) { Print(L"radix3: n1=%d (expected 1)\n", n1); return 0; }
 
     /* L0 PDE → страница L1 */
     *(UINT64*)(Buf + 0) = physBase + off1;
@@ -3440,11 +3442,11 @@ cmp90_fat_load_bootmgfw(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
 
     cur = rootClus;
     for (ci = 0; ci < 4; ci++) {
-        Print(L"[preload] ищу \"%s\"...\n", comps[ci]);
+        Print(L"[preload] looking for \"%s\"...\n", comps[ci]);
         st = cmp90_fat_dir_find(bio, lbaPartStart, bpb, cur,
                                 comps[ci], &cur, &sz);
         if (EFI_ERROR(st)) {
-            Print(L"[preload] не найдено (%r)\n", st);
+            Print(L"[preload] not found (%r)\n", st);
             return st;
         }
         if (ci < 3 && sz != 0) return EFI_NOT_FOUND; /* ждали каталог */
@@ -3472,11 +3474,11 @@ static void preload_bootmgfw(void)
     UINTN n = 0, k;
     EFI_STATUS st;
 
-    Print(L"[preload v2.89] BlockIo перечисление (SFS не используем!)...\n");
+    Print(L"[preload v2.89] BlockIo enumeration (SFS not used!)...\n");
     st = uefi_call_wrapper(BS->LocateHandleBuffer, 5, ByProtocol,
                            &cmp90BioGuid, NULL, &n, &H);
     if (EFI_ERROR(st)) { Print(L"[preload] LocateHandleBuffer: %r\n", st); return; }
-    Print(L"[preload] блочных устройств: %d\n", n);
+    Print(L"[preload] block devices: %d\n", n);
 
     for (k = 0; k < n && !g_bmBuf; k++) {
         EFI_BLOCK_IO_PROTOCOL *bio = NULL;
@@ -3486,7 +3488,7 @@ static void preload_bootmgfw(void)
                               (VOID **)&bio) || !bio || !bio->Media)
             continue;
         isPart = bio->Media->LogicalPartition;
-        Print(L"[preload] хендл %d: bs=%d last=%llu removable=%d logical=%d\n",
+        Print(L"[preload] handle %d: bs=%d last=%llu removable=%d logical=%d\n",
               k, bio->Media->BlockSize,
               (UINT64)bio->Media->LastBlock,
               bio->Media->RemovableMedia, isPart);
@@ -3500,12 +3502,12 @@ static void preload_bootmgfw(void)
             if (!EFI_ERROR(stf)) {
                 g_bmBuf = fb; g_bmSize = fsz;
                 g_bmDp = FileDevicePath(H[k], WINDOWS_BOOT_PATH);
-                Print(L"[preload] ✓ bootmgfw.efi %d байт в ОЗУ (хендл %d, direct)\n",
+                Print(L"[preload] OK bootmgfw.efi %d bytes in RAM (handle %d, direct)\n",
                       fsz, k);
                 break;
             }
             if (stf != EFI_UNSUPPORTED && stf != EFI_NOT_FOUND)
-                Print(L"[preload] хендл %d FAT: %r\n", k, stf);
+                Print(L"[preload] handle %d FAT: %r\n", k, stf);
         }
 
         /* для ЦЕЛЫХ дисков дополнительно — GPT: ESP-разделы внутри */
@@ -3538,8 +3540,8 @@ static void preload_bootmgfw(void)
                     if (first) espLba = first;
                 }
             }
-            if (!espLba) { Print(L"[preload] ESP не найден в GPT\n"); continue; }
-            Print(L"[preload] ESP @LBA %llu — читаю bootmgfw...\n", espLba);
+            if (!espLba) { Print(L"[preload] ESP not found in GPT\n"); continue; }
+            Print(L"[preload] ESP @LBA %llu - reading bootmgfw...\n", espLba);
 
             {
                 UINT8 *fb = NULL; UINTN fsz = 0;
@@ -3547,7 +3549,7 @@ static void preload_bootmgfw(void)
                 if (EFI_ERROR(st)) { Print(L"[preload] bootmgfw: %r\n", st); continue; }
                 g_bmBuf = fb; g_bmSize = fsz;
                 g_bmDp = FileDevicePath(H[k], WINDOWS_BOOT_PATH);
-                Print(L"[preload] ✓ bootmgfw.efi %d байт в ОЗУ (GPT ESP@%llu)\n",
+                Print(L"[preload] OK bootmgfw.efi %d bytes in RAM (GPT ESP@%llu)\n",
                       fsz, espLba);
             }
         }
@@ -3579,11 +3581,11 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
             CHAR16 *vol = DevicePathToStr(dp);
             CHAR16 *fp  = li->FilePath ? DevicePathToStr(li->FilePath) : NULL;
             if (vol) {
-                Print(L"chainload: мы загружены с тома: %s\n", vol);
+                Print(L"chainload: we were loaded from volume: %s\n", vol);
                 FreePool(vol);
             }
             if (fp) {
-                Print(L"chainload: наш путь: %s\n", fp);
+                Print(L"chainload: our path: %s\n", fp);
                 FreePool(fp);
             }
         }
@@ -3600,9 +3602,9 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
      *      анлок сохраняется. */
 
     if (!g_bmBuf || !g_bmSize || !g_bmDp)
-        Print(L"chainload-pre: preload пуст\n");
+        Print(L"chainload-pre: preload empty\n");
     else {
-        Print(L"chainload-pre: LoadImage из ОЗУ (%d байт)...\n", g_bmSize);
+        Print(L"chainload-pre: LoadImage from RAM (%d bytes)...\n", g_bmSize);
         st = uefi_call_wrapper(BS->LoadImage, 6, FALSE, ImageHandle,
                                g_bmDp, g_bmBuf, g_bmSize, &h);
         if (EFI_ERROR(st)) {
@@ -3610,20 +3612,20 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
         } else {
             Print(L"chainload-pre: StartImage Windows Boot Manager...\n");
             st = uefi_call_wrapper(BS->StartImage, 3, h, NULL, NULL);
-            Print(L"chainload-pre: StartImage вернул: %r\n", st);
+            Print(L"chainload-pre: StartImage returned: %r\n", st);
             if (!EFI_ERROR(st))
                 return EFI_SUCCESS;
         }
     }
 
-    Print(L"chainload-pre: fallback на SFS-путь\n");
+    Print(L"chainload-pre: falling back to the SFS path\n");
     st = chainload_os(ImageHandle);
     if (!EFI_ERROR(st))
         return EFI_SUCCESS;
 
     /* последняя ступень: возврат в прошивку. НИКАКОГО ResetSystem и
      * НИКАКОГО BootNext (NVRAM-записи на этой плате вешают систему). */
-    Print(L"chainload-pre: возврат в прошивку (без POST)\n");
+    Print(L"chainload-pre: returning to firmware (no POST)\n");
     return EFI_NOT_FOUND;
 }
 
@@ -3775,9 +3777,9 @@ chainload_os_one(EFI_HANDLE ImageHandle, EFI_HANDLE FsHandle, const CHAR16 *Path
         Print(L"chainload: LoadImage %s: %r\n", Path, Status);
         return Status;
     }
-    Print(L"chainload: старт %s...\n", Path);
+    Print(L"chainload: starting %s...\n", Path);
     Status = uefi_call_wrapper(BS->StartImage, 3, H, NULL, NULL);
-    Print(L"chainload: StartImage вернул: %r\n", Status);
+    Print(L"chainload: StartImage returned: %r\n", Status);
     return Status;
 }
 
@@ -3789,14 +3791,14 @@ chainload_os(EFI_HANDLE ImageHandle)
     EFI_STATUS Status;
     static EFI_GUID FsGuid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
 
-    Print(L"chainload: перечисляю SimpleFileSystem-хендлы...\n");
+    Print(L"chainload: enumerating SimpleFileSystem handles...\n");
     Status = uefi_call_wrapper(BS->LocateHandleBuffer, 5,
         ByProtocol, &FsGuid, NULL, &n, &Handles);
     if (EFI_ERROR(Status)) {
         Print(L"chainload: LocateHandleBuffer: %r\n", Status);
         return Status;
     }
-    Print(L"chainload: найдено FS-хендлов: %d\n", n);
+    Print(L"chainload: FS handles found: %d\n", n);
     for (i = 0; i < n; i++) {
         /* какое устройство за каждым FS-хендлом (диск/раздел ESP) — видно,
          * С КАКОГО тома пытаемся грузиться (issue #43/#47) */
@@ -3824,7 +3826,7 @@ chainload_os(EFI_HANDLE ImageHandle)
             }
         }
     if (Handles) FreePool(Handles);
-    Print(L"chainload: загрузчик ОС не найден\n");
+    Print(L"chainload: OS loader not found\n");
     return EFI_NOT_FOUND;
 }
 
