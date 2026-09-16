@@ -3558,10 +3558,36 @@ static void preload_bootmgfw(void)
 static EFI_STATUS chainload_os(EFI_HANDLE ImageHandle);
 
 /* финальный старт: из ОЗУ (SourceBuffer), DevicePath = реальный ESP */
+/* EFI_DEVICE_PATH_PROTOCOL — for the "which volume am I on / booting from"
+ * chainload diagnostics (issue #43/#47: identify the ESP in the log). */
+static EFI_GUID u40x_dp_guid = {0x09576e91,0x6d3f,0x11d2,
+    {0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
+
 static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
 {
     EFI_HANDLE h = NULL;
     EFI_STATUS st;
+
+    /* где живём мы сами — коррелирует со списком FS#N ниже */
+    {
+        EFI_LOADED_IMAGE *li = NULL;
+        EFI_DEVICE_PATH *dp = NULL;
+        if (!EFI_ERROR(uefi_call_wrapper(BS->HandleProtocol, 3, ImageHandle,
+                &LoadedImageProtocol, (VOID**)&li)) && li &&
+            !EFI_ERROR(uefi_call_wrapper(BS->HandleProtocol, 3,
+                li->DeviceHandle, &u40x_dp_guid, (VOID**)&dp)) && dp) {
+            CHAR16 *vol = DevicePathToStr(dp);
+            CHAR16 *fp  = li->FilePath ? DevicePathToStr(li->FilePath) : NULL;
+            if (vol) {
+                Print(L"chainload: мы загружены с тома: %s\n", vol);
+                FreePool(vol);
+            }
+            if (fp) {
+                Print(L"chainload: наш путь: %s\n", fp);
+                FreePool(fp);
+            }
+        }
+    }
 
     /* ===== v2.99m: лестница загрузки ОС БЕЗ единого ресета =====
      * Тёплый ресет = POST = VBIOS переинициализирует GPU и анлок гибнет
@@ -3771,11 +3797,24 @@ chainload_os(EFI_HANDLE ImageHandle)
         return Status;
     }
     Print(L"chainload: найдено FS-хендлов: %d\n", n);
+    for (i = 0; i < n; i++) {
+        /* какое устройство за каждым FS-хендлом (диск/раздел ESP) — видно,
+         * С КАКОГО тома пытаемся грузиться (issue #43/#47) */
+        EFI_DEVICE_PATH *dp = NULL;
+        if (!EFI_ERROR(uefi_call_wrapper(BS->HandleProtocol, 3,
+                Handles[i], &u40x_dp_guid, (VOID**)&dp)) && dp) {
+            CHAR16 *vol = DevicePathToStr(dp);
+            if (vol) {
+                Print(L"chainload: FS#%d = %s\n", (INT32)i, vol);
+                FreePool(vol);
+            }
+        }
+    }
     for (i = 0; i < n; i++)
         for (p = 0; p < sizeof(os_loader_paths)/sizeof(os_loader_paths[0]); p++) {
             /* issue #47: on some AMI firmwares the SFS calls below hang —
              * this marker is the last line printed before each risky step */
-            Print(L"chainload: h%d probe %s...\n", (INT32)i, os_loader_paths[p]);
+            Print(L"chainload: FS#%d: probe %s...\n", (INT32)i, os_loader_paths[p]);
             if (is_our_binary(ImageHandle, Handles[i], os_loader_paths[p]))
                 continue;       /* never chainload ourselves */
             Status = chainload_os_one(ImageHandle, Handles[i], os_loader_paths[p]);
