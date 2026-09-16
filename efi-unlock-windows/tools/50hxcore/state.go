@@ -20,6 +20,13 @@ const SS0Offset = 0x409664
 // uses SS0 alone.
 const SS1Offset = 0x40966C
 
+// PFB WPR2 window (BAR0) — the EFI's 10/20 GiB SKU detector reads the same
+// pair; 50HXCheck reports what the card latched (issue #39 probe).
+const (
+	Wpr2LoOffset = 0x1FA824
+	Wpr2HiOffset = 0x1FA828
+)
+
 // UnlockState is a one-shot snapshot of "did the unlock succeed".
 type UnlockState struct {
 	BridgeOK  bool   // \\.\50hxBridge openable
@@ -33,6 +40,9 @@ type UnlockState struct {
 	SS1      uint32
 	SS0OK    bool // Successfully read SS0
 	Unlocked bool // SS0 == 0x88888888
+	Wpr2Lo   uint32 // POST-latched WPR2 window (VBIOS latch, or the EFI's after an unlock ran)
+	Wpr2Hi   uint32
+	Wpr2OK   bool
 }
 
 // The 50HX's LocationInformation in the PCI enum is shaped like
@@ -243,6 +253,12 @@ func ReadUnlockStateV2(retries int, delayMs int) *UnlockState {
 	}
 	if v, err := TSRead(th, bar0+SS1Offset); err == nil {
 		st.SS1 = v
+	}
+	if v, err := TSRead(th, bar0+Wpr2LoOffset); err == nil {
+		st.Wpr2Lo, st.Wpr2OK = v&0xFFFFFFF0, true
+	}
+	if v, err := TSRead(th, bar0+Wpr2HiOffset); err == nil {
+		st.Wpr2Hi = v & 0xFFFFFFF0
 	}
 	return st
 }

@@ -184,6 +184,7 @@ type guiState struct {
 
 	rbStrategy     [3]*walk.RadioButton
 	ckAutoHard     *walk.CheckBox
+	ckFb20g        *walk.CheckBox
 	neRetryCnt     *walk.NumberEdit
 	neRetryMin     *walk.NumberEdit
 	pbSave, pbGen2, pbGen2Install *walk.PushButton
@@ -545,6 +546,7 @@ func runGUI() {
 						Children: []Widget{
 							CheckBox{AssignTo: &st.ckGsp, Text: "GSP enable (EnableGpuFirmware=1)"},
 							CheckBox{AssignTo: &st.ckEfi, Text: "Compute EFI + firmware boot entry"},
+							CheckBox{AssignTo: &st.ckFb20g, Text: "Force 20 GB geometry (modified 20 GB cards mis-detected as 10 GB — issue #39)"},
 							CheckBox{AssignTo: &st.ckDrv, Text: "Gen2 driver deploy + Defender exclusions"},
 							CheckBox{AssignTo: &st.ckTask, Text: "Gen2 logon auto-start"},
 							CheckBox{AssignTo: &st.ckFast, Text: "Power: disable Fast Startup"},
@@ -565,6 +567,7 @@ func runGUI() {
 									"gsp":    st.ckGsp.Checked(),
 									"drv":    st.ckDrv.Checked(),
 									"efi":    st.ckEfi.Checked(),
+									"fb20g":  st.ckFb20g.Checked(),
 									"task":   st.ckTask.Checked(),
 									"fast":   st.ckFast.Checked(),
 									"aspm":   st.ckAspm.Checked(),
@@ -750,6 +753,11 @@ func (st *guiState) installSelected(sel map[string]bool) {
 	}
 	if sel["efi"] {
 		fmt.Println("──── Compute EFI deploy + firmware boot entry (dual write + set first) ────")
+		if err := hxcore.SetFb20gVar(sel["fb20g"]); err != nil {
+			fmt.Println("  [!] fb=20g override variable:", err)
+		} else if sel["fb20g"] {
+			fmt.Println("  fb=20g override set: 20 GB geometry forced at boot")
+		}
 		installEFI()
 	}
 	if sel["task"] {

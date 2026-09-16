@@ -838,6 +838,7 @@ func install() {
 
 	// 5+6. EFI deploy and boot entry (v2.6.0: extracted to installEFI, reused per-component by the GUI)
 	fmt.Println("[5/8]+[6/8] Deploy unlock EFI and firmware boot entry (dual-path write + displayorder promotion)...")
+	hxcore.SetFb20gVar(false) // full install = stock defaults; the component page sets the override
 	efiOK := installEFI()
 
 	// 7. Gen2 auto-start (do NOT retrain during install!)
@@ -1966,6 +1967,12 @@ func uninstall() {
 		fmt.Println("done")
 	} else {
 		fmt.Println("not found (possibly removed already)")
+	}
+	fmt.Print("[3.5/8] Clear fb=20g override variable ... ")
+	if err := hxcore.SetFb20gVar(false); err != nil {
+		fmt.Println("skipped (not present):", err)
+	} else {
+		fmt.Println("done")
 	}
 	fmt.Print("[4/8] Delete ESP unlock EFI ... ")
 	if hxcore.UninstallEspEfi() {

@@ -541,6 +541,14 @@ func check() {
 	}
 	w("  Compute : %s\n", comp)
 	w("  PCIe    : %s\n", spd)
+	if st.Wpr2OK {
+		span := st.Wpr2Hi - st.Wpr2Lo
+		mib := (uint64(st.Wpr2Lo)<<8 + 0x200000) >> 20 // the window sits 2 MiB below top-of-FB
+		w("  VRAM    : WPR2 %08X:%08X (span 0x%X) → FB ≈ %d MiB\n", st.Wpr2Lo, st.Wpr2Hi, span, mib)
+		if mib != 10240 && mib != 20480 {
+			w("           unusual size — modified 20 GB card? 'Force 20 GB geometry' (fb=20g) forces it — issue #39\n")
+		}
+	}
 	w("%s\n", bar)
 
 	// --- B. Basic status ---

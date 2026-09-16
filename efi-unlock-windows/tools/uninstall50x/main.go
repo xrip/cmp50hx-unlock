@@ -146,6 +146,14 @@ func main() {
 		fmt.Println("not found (may already be removed)")
 	}
 
+	// 3.5 fb=20g override variable (issue #39).
+	fmt.Print("[3.5/8] Clear fb=20g override variable ... ")
+	if err := hxcore.SetFb20gVar(false); err != nil {
+		fmt.Println("skipped (not present):", err)
+	} else {
+		fmt.Println("done")
+	}
+
 	// 4. ESP unlock EFI files.
 	fmt.Print("[4/8] Remove ESP unlock EFI ... ")
 	if delEspEfi() {

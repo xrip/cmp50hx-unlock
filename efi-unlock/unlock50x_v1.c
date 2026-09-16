@@ -550,12 +550,47 @@ static UINT32 g_wpr2HiUp   = FW50_WPR2_HI_UP;
  * further down. */
 static UINT32 mmio_read32(UINTN offset);
 
+/* fb=20g override (issue #39): some modified 20 GB cards latch a WPR2 that
+ * lies (seen: 0x1ffffe00 ≈ 8 GiB), so the SKU heuristic picks 10 GiB and
+ * half the VRAM is lost. The override arrives either as the "fb=20g"
+ * LoadOptions token (efibootmgr -u / GRUB) or as the 50HXFB="20G" UEFI
+ * variable (Windows installer: bcdedit firmware entries carry no load
+ * options). */
+static BOOLEAN
+u40x_force_fb20g(EFI_HANDLE IH)
+{
+    static EFI_GUID gvGuid = EFI_GLOBAL_VARIABLE;
+    UINTN sz = 8;
+    CHAR16 buf[4] = {0, 0, 0, 0};
+    UINT32 attr = 0;
+    EFI_STATUS st;
+
+    if (IH && u40x_has_load_option(IH, L"fb=20g"))
+        return TRUE;
+    st = uefi_call_wrapper(RT->GetVariable, 5, L"50HXFB", &gvGuid,
+                           &attr, &sz, buf);
+    return !EFI_ERROR(st) && sz >= 6 &&
+           buf[0] == L'2' && buf[1] == L'0' && buf[2] == L'G';
+}
+
 static VOID
-detect_fb_size(VOID)
+detect_fb_size(EFI_HANDLE IH)
 {
     UINT32 lo = mmio_read32(REG_PFB_MMU_WPR2_LO) & 0xFFFFFFF0U;
     UINT32 hi = mmio_read32(REG_PFB_MMU_WPR2_HI) & 0xFFFFFFF0U;
     UINT32 span = hi - lo;
+
+    if (u40x_force_fb20g(IH)) {
+        /* Mirror the proven 10 GiB layout: FRTS 2 MiB below top-of-FB,
+         * WPR2 window (span 0xE00) right at it. */
+        g_fbSize     = 0x500000000ULL;
+        g_frtsOffset = g_fbSize - 0x200000ULL;
+        g_wpr2LoUp   = (UINT32)(g_frtsOffset >> 8);
+        g_wpr2HiUp   = g_wpr2LoUp + 0xE00U;
+        Print(L"[50HX] fb=20g override: forcing 20 GiB geometry "
+              L"(latched WPR2_LO=0x%08x ignored)\n", lo);
+        return;
+    }
     if (span == 0xE00U && lo >= 0x04000000U && lo < 0x06000000U) {
         g_fbSize     = 0x500000000ULL;
         g_frtsOffset = (UINT64)lo << 8;
@@ -4184,7 +4219,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
      * Must happen before any code path that consumes g_fbSize / g_frtsOffset
      * (build_wpr_meta below, fwsec_boot_gsp_50hx in step [8b]). Cold POST with
      * no VBIOS FWSEC keeps the 10 GiB defaults — same fallback as before. */
-    detect_fb_size();
+    detect_fb_size(ImageHandle);
 #ifdef VBIOS_DUMP
     u40x_vbios_dump();          /* v65: after BAR enable; -> \50hx_vbios.bin */
 #endif

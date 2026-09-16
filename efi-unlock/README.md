@@ -263,6 +263,12 @@ itself never survives a GPU reset anyway).
   for 20 GiB, `0x027FEE00:0x027FE000` for 10 GiB — same span `0xE00`) and
   selects FRTS `0x4FFE00000` / fbSize `0x500000000` instead of the 10 GiB
   defaults. Cold POST with no VBIOS FWSEC keeps the 10 GiB defaults.
+  Modified 20 GB cards whose latch lies (e.g. `WPR2_LO=0x1ffffe00`, issue
+  #39) can force the 20 GiB layout with the `fb=20g` load option —
+  `install.sh --fb-20g`, `efibootmgr -u "fb=20g"`, or the `50HXFB=20G`
+  firmware variable written by the Windows installer's "Force 20 GB
+  geometry" checkbox. The layout then mirrors the 10 GiB proof (FRTS
+  2 MiB below top-of-FB).
 - One card per run: the application unlocks the first `10de:1e09` it
   finds; multi-GPU hosts need an iteration loop (not yet ported).
 - Windows: covered by [`../efi-unlock-windows/`](../efi-unlock-windows/README.md),

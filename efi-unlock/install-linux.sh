@@ -10,6 +10,8 @@
 #   5. set BootNext so the very next boot runs the unlock once (safe test)
 #
 # Rollback: bash install-linux.sh --remove
+# Modified 20 GB cards (issue #39): bash install-linux.sh --fb-20g forces
+# the 20 GiB geometry via the fb=20g load option.
 set -euo pipefail
 
 EFI_NAME="50HXUNLK.EFI"
@@ -22,6 +24,9 @@ say() { printf '[50hx] %s\n' "$*"; }
 die() { printf '[50hx] ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "run as root (sudo)"
+
+FB_20G=0
+if [[ " $* " == *" --fb-20g "* ]]; then FB_20G=1; fi
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EFI_FILE="$SELF_DIR/$EFI_NAME"
@@ -121,8 +126,10 @@ remove_entry_quiet() {
     done
 }
 remove_entry_quiet
+FB_ARGS=()
+if [[ $FB_20G -eq 1 ]]; then FB_ARGS=(-u "fb=20g"); fi
 NEWID="$(efibootmgr -c -d "$ESP_DISK" -p "$ESP_PARTNUM" \
-    -L "$ENTRY_LABEL" -l "\$EFI_DIR\\$EFI_NAME" 2>/dev/null | \
+    -L "$ENTRY_LABEL" -l "\\$EFI_DIR\\$EFI_NAME" "${FB_ARGS[@]}" 2>/dev/null | \
     sed -nE 's/^Boot([0-9A-F]{4})\*? .*/\1/p' | head -1)"
 [[ -n "$NEWID" ]] || die "efibootmgr failed to create the entry"
 
