@@ -269,6 +269,12 @@ itself never survives a GPU reset anyway).
   firmware variable written by the Windows installer's "Force 20 GB
   geometry" checkbox. The layout then mirrors the 10 GiB proof (FRTS
   2 MiB below top-of-FB).
+- After the unlock the EFI also attempts a best-effort ReBAR activation
+  (16 GiB BAR1 — the pre-OS port of the Linux `03-cmp50-rebar.patch` XVE
+  writes). It only sticks when the upstream bridge's prefetchable window
+  already covers a 16 GiB-aligned span; on any failed check the original
+  state is restored bit-for-bit and the boot continues stock. Log prefix:
+  `[rebar]`.
 - One card per run: the application unlocks the first `10de:1e09` it
   finds; multi-GPU hosts need an iteration loop (not yet ported).
 - Windows: covered by [`../efi-unlock-windows/`](../efi-unlock-windows/README.md),

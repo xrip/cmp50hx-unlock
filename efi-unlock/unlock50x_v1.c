@@ -4165,6 +4165,134 @@ static EFI_STATUS u40x_build_radix(UINT64 dataPhys, UINT64 dataSize,
     return EFI_SUCCESS;
 }
 
+/* ===== [11] best-effort ReBAR activation (16 GiB BAR1) =====
+ * GPU-side port of the Linux 03-cmp50-rebar.patch: unlock the TU102 XVE
+ * CYA and set the BAR1 size selector (8 = 16 GiB). We run AFTER firmware
+ * enumeration, so the enlarged BAR1 sticks only when the upstream bridge's
+ * prefetchable window already covers a 16 GiB-aligned span — on other
+ * boards every write is reverted and the boot continues stock
+ * ("activated — lucky; failed — exactly as it was"). The kernel-side
+ * pci_resize_resource equivalent is done directly: spec sizing probe via
+ * CF8 (no ECAM dependency — works on CF8-only hosts) + base reassignment
+ * inside the existing window. */
+#define XVE_CYA_OFF      0x88724UL   /* CYA unlock (write 0x30 to unlock) */
+#define XVE_CAP_OFF      0x88bbcUL   /* size mask (0x400 stock -> 0x7fc00) */
+#define XVE_CFG_OFF      0x88dccUL   /* size selector (0 stock -> 8) */
+#define XVE_CFG_SEL_MASK 0x0000000FU
+#define XVE_CFG_ENABLE   0x80000000U
+#define REBAR_WANT       0x400000000ULL  /* 16 GiB */
+
+static VOID
+u40x_rebar_revert(UINT32 cfg, UINT32 cya, UINT32 cmd, UINT32 b1lo, UINT32 b1hi)
+{
+    cfg_write32(0x14, b1lo);
+    cfg_write32(0x18, b1hi);
+    cfg_write32(0x04, cmd);          /* decode back on first... */
+    mmio_write32(XVE_CFG_OFF, cfg);  /* ...then XVE via BAR0 MMIO */
+    mmio_write32(XVE_CYA_OFF, cya);
+    (void)mmio_read32(XVE_CYA_OFF);
+}
+
+static VOID
+u40x_rebar_try16g(VOID)
+{
+    UINT32 cya, cfg, cap, cmd, b1lo, b1hi, rlo, rhi, dw;
+    UINT64 b1base, wbase, wlim, cand;
+    UINTN bb = 0, bd = 0, bf = 0;
+
+    cya    = mmio_read32(XVE_CYA_OFF);
+    cfg    = mmio_read32(XVE_CFG_OFF);
+    cap    = mmio_read32(XVE_CAP_OFF);
+    cmd    = cfg_read32(0x04);
+    b1lo   = cfg_read32(0x14);
+    b1hi   = cfg_read32(0x18);
+    b1base = (UINT64)(b1lo & 0xFFFFFFF0U) | ((UINT64)b1hi << 32);
+    Print(L"[rebar] XVE cya=0x%08x cfg=0x%08x cap=0x%08x\n", cya, cfg, cap);
+    Print(L"[rebar] BAR1 base=0x%llx flags=0x%x cmd=0x%08x\n",
+          b1base, b1lo & 0xFU, cmd);
+
+    if ((b1lo & 0xFU) != 0xCU) {
+        Print(L"[rebar] BAR1 is not 64-bit prefetchable — skip\n");
+        return;
+    }
+    if (!find_bridge_to(gBus, &bb, &bd, &bf)) {
+        Print(L"[rebar] upstream bridge not found — skip\n");
+        return;
+    }
+    /* prefetchable window of the upstream bridge (type-1 regs 0x24..0x2C) */
+    dw    = pci_cfg_rd_idx(gBrIdx, bb, bd, bf, 0x24);
+    wbase = (UINT64)(((dw >> 4) & 0xFFFU) << 20) |
+            ((UINT64)pci_cfg_rd_idx(gBrIdx, bb, bd, bf, 0x28) << 32);
+    wlim  = (UINT64)(((dw >> 20) & 0xFFFU) << 20) |
+            ((UINT64)pci_cfg_rd_idx(gBrIdx, bb, bd, bf, 0x2C) << 32) |
+            0xFFFFFULL;
+    Print(L"[rebar] bridge %02x:%02x.%x pref window 0x%llx..0x%llx\n",
+          (UINT32)bb, (UINT32)bd, (UINT32)bf, wbase, wlim);
+    if (((dw >> 4) & 0xFFFU) == 0 && ((dw >> 20) & 0xFFFU) == 0) {
+        Print(L"[rebar] prefetch window disabled — skip\n");
+        return;
+    }
+
+    /* keep the current base when it is already 16 GiB-aligned and fits;
+     * otherwise relocate to the lowest 16 GiB-aligned span in the window
+     * (the prefetchable window hosts only the GPU BAR1 on these hosts) */
+    if ((b1base & (REBAR_WANT - 1)) == 0 && b1base + REBAR_WANT - 1 <= wlim) {
+        cand = b1base;
+    } else {
+        cand = (wbase + REBAR_WANT - 1) & ~(REBAR_WANT - 1);
+        if (cand + REBAR_WANT - 1 > wlim) {
+            Print(L"[rebar] no 16 GiB-aligned span in window — skip\n");
+            return;
+        }
+        Print(L"[rebar] relocating BAR1 0x%llx -> 0x%llx\n", b1base, cand);
+    }
+
+    /* activate: CYA unlock + selector 8, verified by readback */
+    mmio_write32(XVE_CYA_OFF, 0x30U);
+    mmio_write32(XVE_CFG_OFF, (cfg & ~XVE_CFG_SEL_MASK) | XVE_CFG_ENABLE | 8U);
+    if ((mmio_read32(XVE_CFG_OFF) & (XVE_CFG_ENABLE | XVE_CFG_SEL_MASK))
+        != (XVE_CFG_ENABLE | 8U)) {
+        Print(L"[rebar] XVE readback failed (cfg now 0x%08x) — revert\n",
+              mmio_read32(XVE_CFG_OFF));
+        u40x_rebar_revert(cfg, cya, cmd, b1lo, b1hi);
+        return;
+    }
+
+    /* resize + reassign BAR1 with decode off (spec sizing sequence) */
+    cfg_write32(0x04, cmd & ~0x2U);
+    cfg_write32(0x14, 0xFFFFFFFFU);
+    cfg_write32(0x18, 0xFFFFFFFFU);
+    rlo = cfg_read32(0x14);
+    rhi = cfg_read32(0x18);
+    if (rlo != 0xFFFFFFFCU || rhi != 0x00000003U) {
+        Print(L"[rebar] size probe 0x%08x/0x%08x (want FFFFFFFC/00000003)"
+              L" — revert\n", rlo, rhi);
+        u40x_rebar_revert(cfg, cya, cmd, b1lo, b1hi);
+        return;
+    }
+    cfg_write32(0x14, (UINT32)cand | 0xCU);
+    cfg_write32(0x18, (UINT32)(cand >> 32));
+    cfg_write32(0x04, cmd);              /* original cmd = decode on */
+
+    /* verify the assignment and that VRAM really answers through it */
+    {
+        UINT32 vlo = cfg_read32(0x14), vhi = cfg_read32(0x18);
+        volatile UINT32 *p0 = (volatile UINT32 *)(UINTN)cand;
+        volatile UINT32 *p1 = (volatile UINT32 *)(UINTN)(cand + REBAR_WANT / 2);
+        UINT32 v0 = *p0, v1 = *p1;
+        if ((((UINT64)(vlo & 0xFFFFFFF0U)) | ((UINT64)vhi << 32)) != cand ||
+            (v0 == 0xFFFFFFFFU && v1 == 0xFFFFFFFFU)) {
+            Print(L"[rebar] aperture verify failed (base %08x_%08x, "
+                  L"v0=0x%08x v1=0x%08x) — revert\n", vhi, vlo, v0, v1);
+            u40x_rebar_revert(cfg, cya, cmd, b1lo, b1hi);
+            return;
+        }
+        Print(L"[rebar] aperture ok: [+0]=0x%08x [+8G]=0x%08x\n", v0, v1);
+    }
+    Print(L"[rebar] BAR1 16 GiB active @ 0x%llx (was 0x%llx) — lucky!\n",
+          cand, b1base);
+}
+
 /* ===== v55 主entry（DIRECT_SEC2，40HX） ===== */
 EFI_STATUS EFIAPI
 efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
@@ -4461,6 +4589,9 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
 done:
     dump_regs(L"[v55 final]");
+    /* ---------- [11] best-effort ReBAR (16 GiB BAR1); reverts on any
+     * failed check — see u40x_rebar_try16g ---------- */
+    u40x_rebar_try16g();
     /* v71fix: 黑屏很久+driver掉根因 = return firmware → BDS 重跑 POST →
      * GPU 重新initialize/unlock 丢失。改用黑盒式链载（chainload_preloaded：
      * preload bootmgfw → LoadImage → StartImage → SFS fallback），
