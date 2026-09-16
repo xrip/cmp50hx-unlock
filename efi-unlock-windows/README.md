@@ -135,9 +135,11 @@ Boot Manager` is untouched and always bootable.
   services, ESP mount, Defender; mirrors the 40HX `40hxcore`)
 - `tools/winres_gen/` — generates `rsrc_windows_amd64.syso` for the
   Windows manifest (one-shot)
-- `gen2/` — BYOVD runtime: `install_autostart.bat` (registers the
-  logon task), `run_gen2.bat` (one-shot Gen2), `uninstall.bat`,
-  `drivers/` (the two pre-signed `.sys` files)
+- `gen2/` — BYOVD runtime: `drivers/` (the two pre-signed `.sys` files).
+  The legacy `install_autostart.bat` / `run_gen2.bat` / `uninstall.bat`
+  were removed in v1.1.14 — they predate the Go installer (referenced a
+  Python script and an `Administrator` account that no longer exist, #44);
+  the installer/uninstaller GUI and `-task` cover all of it natively
 - `build.ps1` — one-shot build of all four binaries
 
 ## Known caveats
