@@ -18,7 +18,7 @@ func main() {
 	}
 	rs := winres.ResourceSet{}
 	am := winres.AppManifest{
-		Identity:            winres.AssemblyIdentity{Name: "40HX.Installer", Version: [4]uint16{3, 0, 0, 0}},
+		Identity:            winres.AssemblyIdentity{Name: "40HX.Installer", Version: [4]uint16{3, 1, 0, 0}},
 		Description:         "CMP 50HX Unlock Manager (compute unlock + PCIe Gen2)",
 		UseCommonControlsV6: true,
 		DPIAwareness:        winres.DPIPerMonitorV2,
@@ -26,8 +26,8 @@ func main() {
 	}
 	rs.SetManifest(am)
 	vi := version.Info{}
-	vi.SetFileVersion("3.0.0.0")
-	vi.SetProductVersion("3.0.0.0")
+	vi.SetFileVersion("3.1.0.0")
+	vi.SetProductVersion("3.1.0.0")
 	vi.Set(winres.LCIDDefault, "ProductName", "CMP 50HX Windows Unlock")
 	vi.Set(winres.LCIDDefault, "FileDescription", "50HX Installer/Manager")
 	vi.Set(winres.LCIDDefault, "LegalCopyright", "For personal hardware research and learning use only")

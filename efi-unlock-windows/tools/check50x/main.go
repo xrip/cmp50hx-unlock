@@ -1,4 +1,4 @@
-// 40HXCheck — CMP 50HX unlock standalone diagnostic tool v3.0.0
+// 40HXCheck — CMP 50HX unlock standalone diagnostic tool v3.1.0
 //
 // Double-click to diagnose; read-only by default. Since v2.5, when it
 // detects "compute / Gen2 cannot be measured live (driver not running)"
@@ -440,7 +440,7 @@ func rawPcieDump() string {
 // during community feedback.
 func knownIssuesBlock() string {
 	var sb strings.Builder
-	sb.WriteString("\n--- Known limits / potential issues (v3.0.0, items the community has not fully covered) ---\n")
+	sb.WriteString(fmt.Sprintf("\n--- Known limits / potential issues (v%s, items the community has not fully covered) ---\n", hxcore.ToolVersion))
 	sb.WriteString("· Driver / GSP holds the link policy (GSP-RM): at idle / low load nvlddmkm writes the GPU-side TLS back to Gen1; Stage2 automatic fallback or LD (-hard) clears it. **Not** confirmed as firmware write-protection (batch numbers .06/.04 are not a valid criterion), **do NOT flash VBIOS** — if it still fails, send the diagnostic and the log to the author.\n")
 	sb.WriteString("· Cheap boards / multi-GPU: retrain-only cannot train up to Gen2 on some motherboards / topologies; requires a Root Link Disable fallback (instant link drop). Since v2.6 the logon task automatically tries Stage2 once (Gen2AutoHard); if it still fails you can run `50HXInstaller.exe -gen2 -hard` manually.\n")
 	sb.WriteString("· EFI cannot find the card (legacy only scanned bus 0-7): v3.0 extended to 0-16 + a CF8 full 0-255 fallback, covering AGESA / high-bus cases (MSI B450 measured at bus 0x10); if reinstalling the v3.0 EFI still reports not found, the firmware likely did not initialise that headless slot — go to BIOS: Above4G + Re-Size BAR / Init Display First=PEG / plug into the CPU top slot, and send 50hx_log.txt (including the \"diag: CF8 visible devices\" device-mapping section) to the author.\n")
@@ -495,7 +495,7 @@ func check() {
 	// v2.6.0: write the version banner into sb so it is visible in both
 	// the popup and diagnose.txt (previously fmt.Println only went to the log).
 	w("==============================================\n")
-	w("  CMP 50HX Unlock Diagnostics  v3.0.0   %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	w("  CMP 50HX Unlock Diagnostics  v%s   %s\n", hxcore.ToolVersion, time.Now().Format("2006-01-02 15:04:05"))
 	w("==============================================\n")
 	gpuOK := hxcore.FindGPU()
 	sbOn := hxcore.SecureBootOn()
@@ -740,7 +740,7 @@ func check() {
 	// PCIe registers / known limits — to help community feedback triage.
 	w("\n========== Environment ==========\n")
 	w("  OS      : %s\n", osVersion())
-	w("  Admin   : %s   Tool version: v3.0.0\n", map[bool]string{true: "Yes", false: "No"}[isAdmin()])
+	w("  Admin   : %s   Tool version: v%s\n", map[bool]string{true: "Yes", false: "No"}[isAdmin()], hxcore.ToolVersion)
 	w("\n========== Drivers ==========\n")
 	w("%s", driverDetail(svcTS, fileTS))
 	w("%s", driverDetail(svcWR, fileWR))

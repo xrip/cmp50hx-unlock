@@ -530,7 +530,7 @@ func runGUI() {
 
 	createErr := MainWindow{
 		AssignTo: &st.mw,
-		Title:    "CMP 50HX Unlock Manager v3.0.0",
+		Title:    "CMP 50HX Unlock Manager v" + hxcore.ToolVersion,
 		MinSize:  Size{Width: 780, Height: 660},
 		Size:     Size{Width: 860, Height: 800},
 		Layout:   VBox{Spacing: 6},
@@ -697,7 +697,7 @@ func runGUI() {
 
 	st.loadPolicyUI() // Read back Gen2 policy (UI thread, before Run).
 
-	fmt.Println("CMP 50HX Unlock Manager v3.0.0 started (administrator).")
+	fmt.Println("CMP 50HX Unlock Manager v" + hxcore.ToolVersion + " started (administrator).")
 	go func() {
 		// Open with one auto-scan: pre-check + top hint; action buttons disabled during the scan to prevent races.
 		// Results are printed by applySmartDefaults ([i] pre-checked... / [i] all components already ready...).

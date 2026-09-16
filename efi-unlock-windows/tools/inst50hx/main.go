@@ -1,4 +1,4 @@
-// 50HX one-click installer v3.0.0 (CMP 50HX Windows Unlock Installer)
+// 50HX one-click installer v3.1.0 (CMP 50HX Windows Unlock Installer)
 // Features:
 //
 //	(default) Install: GSP enable (EnableGpuFirmware=1) + dual ESP deploy 50HXUNLK.EFI (V70)
@@ -717,7 +717,7 @@ func installEFI() bool {
 
 func install() {
 	fmt.Println("==============================================")
-	fmt.Println("  CMP 50HX Windows Unlock Installer v3.0.0")
+	fmt.Println("  CMP 50HX Windows Unlock Installer v" + hxcore.ToolVersion)
 	fmt.Println("  Tensor unlock(EFI V70 + GSP enable) + PCIe Gen2 + auto-start")
 	fmt.Println("==============================================")
 
@@ -1951,7 +1951,7 @@ func uninstall() {
 	// never matched ->
 	// the boot entry could not be deleted; the EFI / GSP / driver files all remained, and after uninstall
 	// the boot would still run the unlock.
-	fmt.Println("=== Uninstall 50HX unlock (v3.0.0 component-level) ===")
+	fmt.Println("=== Uninstall 50HX unlock (v" + hxcore.ToolVersion + " component-level) ===")
 	fmt.Print("[1/8] Delete scheduled task ... ")
 	if rem := hxcore.UninstallTasks(); len(rem) > 0 {
 		fmt.Println("done")

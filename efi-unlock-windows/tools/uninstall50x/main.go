@@ -1,4 +1,4 @@
-// 50HX one-click uninstaller v3.0.0 (CMP 50HX Windows Unlock Uninstaller)
+// 50HX one-click uninstaller v3.1.0 (CMP 50HX Windows Unlock Uninstaller)
 // GUI no-console build: double-clicking does not pop a console; output
 // goes to %TEMP%\50HX_uninstaller.log and a message box is shown at exit.
 // Removes: scheduled tasks (including the Gen2 retry task) / Gen2 Run
@@ -107,7 +107,7 @@ func main() {
 	// GUI build: mirror output to the log file.
 	setupLog("50HX_uninstaller.log")
 	fmt.Println("==============================================")
-	fmt.Println("  CMP 50HX Windows Unlock Uninstaller v3.0.0")
+	fmt.Println("  CMP 50HX Windows Unlock Uninstaller v" + hxcore.ToolVersion)
 	fmt.Println("  Removes: scheduled tasks / unlock boot entry / ESP EFI / Gen2 auto-start / drivers")
 	fmt.Println("==============================================")
 	if !isAdmin() {
