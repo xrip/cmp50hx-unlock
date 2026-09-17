@@ -13,7 +13,7 @@ index b771a00..1a2b3c4 100644
  
  #include <sound/core.h>             /* HDA struct snd_card */
  
-@@ -1362,6 +1366,257 @@
+@@ -1362,6 +1366,275 @@
  #endif
  }
  
@@ -96,6 +96,7 @@ index b771a00..1a2b3c4 100644
 +    int ret;
 +    int attempt;
 +    int gate_try;
++    int adopt_try;
 +
 +    if (!nv_cmp50hx_is_supported(gpu))
 +        return;
@@ -147,29 +148,55 @@ index b771a00..1a2b3c4 100644
 +     * omitted; an A/B cold boot proved the unlock does not depend on them.
 +     */
 +    nv_cmp50hx_log_gen2_state(nv, gpu, upstream, bar0, "before_policy");
-+    misc1 = readl(bar0 + 0x8841c);
-+    writel((misc1 | ((1U << 11) | (1U << 13))) & ~((1U << 12) | (1U << 14)),
-+           bar0 + 0x8841c);
-+    writel(0U, bar0 + 0x8e120);
-+    writel(1U, bar0 + 0x8e110);
-+    hierarchy = readl(bar0 + 0x88610);
-+    writel((hierarchy & ~(1U << 12)) | 1U, bar0 + 0x88610);
-+    cya0 = readl(bar0 + 0x8c2c0);
-+    writel(cya0 & ~(1U << 2), bar0 + 0x8c2c0);
-+    link_config = readl(bar0 + 0x8c040);
-+    writel((link_config & ~0x000C0000U) | (2U << 18), bar0 + 0x8c040);
-+    pl_link_rate = readl(bar0 + 0x8c1c0);
-+    writel((pl_link_rate & ~0x00060000U) | 0x00040000U, bar0 + 0x8c1c0);
 +
-+    policy_ok =
-+        (readl(bar0 + 0x8e110) == 1U) &&
-+        ((readl(bar0 + 0x8841c) & ((1U << 12) | (1U << 14))) == 0U) &&
-+        ((readl(bar0 + 0x8841c) & ((1U << 11) | (1U << 13))) ==
-+            ((1U << 11) | (1U << 13))) &&
-+        ((readl(bar0 + 0x88610) & ((1U << 12) | 1U)) == 1U) &&
-+        ((readl(bar0 + 0x8c2c0) & (1U << 2)) == 0U) &&
-+        (((readl(bar0 + 0x8c040) >> 18) & 3U) == 2U) &&
-+        ((readl(bar0 + 0x8c1c0) & 0x00060000U) == 0x00040000U);
++    /*
++     * The capability adoption only takes while GSP is not clobbering the
++     * policy registers, and that window is a few hundred milliseconds wide
++     * around the first device open: the very same binary adopted at 6.1 s
++     * on one cold boot (ADOPT_PASS) and missed it on the next
++     * (ADOPT_FAIL), after which no kick works any more - by the time the
++     * boot service polls at ~30 s the window is long closed. So re-apply
++     * the policy and kick the LTSSM in a loop for a few seconds, and stop
++     * at the first adoption.
++     */
++    for (adopt_try = 0; adopt_try < 50; adopt_try++)
++    {
++        misc1 = readl(bar0 + 0x8841c);
++        writel((misc1 | ((1U << 11) | (1U << 13))) &
++                   ~((1U << 12) | (1U << 14)),
++               bar0 + 0x8841c);
++        writel(0U, bar0 + 0x8e120);
++        writel(1U, bar0 + 0x8e110);
++        hierarchy = readl(bar0 + 0x88610);
++        writel((hierarchy & ~(1U << 12)) | 1U, bar0 + 0x88610);
++        cya0 = readl(bar0 + 0x8c2c0);
++        writel(cya0 & ~(1U << 2), bar0 + 0x8c2c0);
++        link_config = readl(bar0 + 0x8c040);
++        writel((link_config & ~0x000C0000U) | (2U << 18), bar0 + 0x8c040);
++        pl_link_rate = readl(bar0 + 0x8c1c0);
++        writel((pl_link_rate & ~0x00060000U) | 0x00040000U, bar0 + 0x8c1c0);
++
++        policy_ok =
++            (readl(bar0 + 0x8e110) == 1U) &&
++            ((readl(bar0 + 0x8841c) & ((1U << 12) | (1U << 14))) == 0U) &&
++            ((readl(bar0 + 0x8841c) & ((1U << 11) | (1U << 13))) ==
++                ((1U << 11) | (1U << 13))) &&
++            ((readl(bar0 + 0x88610) & ((1U << 12) | 1U)) == 1U) &&
++            ((readl(bar0 + 0x8c2c0) & (1U << 2)) == 0U) &&
++            (((readl(bar0 + 0x8c040) >> 18) & 3U) == 2U) &&
++            ((readl(bar0 + 0x8c1c0) & 0x00060000U) == 0x00040000U);
++
++        if (policy_ok)
++        {
++            writel(6U, bar0 + 0x8872c);
++            (void)readl(bar0 + 0x8872c);
++        }
++        msleep(100);
++
++        ret = pcie_capability_read_dword(gpu, PCI_EXP_LNKCAP, &gpu_cap);
++        if (!ret && ((gpu_cap & PCI_EXP_LNKCAP_SLS) >= 2U))
++            break;
++    }
 +
 +    if (!policy_ok)
 +    {
@@ -182,29 +209,20 @@ index b771a00..1a2b3c4 100644
 +        iounmap(bar0);
 +        return;
 +    }
-+    nv_cmp50hx_log_gen2_state(nv, gpu, upstream, bar0, "after_policy");
-+
-+    /*
-+     * XVE_LTSSM kick: makes the card adopt the unlocked capability set
-+     * into its PCIe config block. One-shot per power cycle; harmless when
-+     * the card has already adopted.
-+     */
-+    writel(6U, bar0 + 0x8872c);
-+    (void)readl(bar0 + 0x8872c);
-+    msleep(50);
 +    nv_cmp50hx_log_gen2_state(nv, gpu, upstream, bar0, "after_ltssm");
 +
-+    ret = pcie_capability_read_dword(gpu, PCI_EXP_LNKCAP, &gpu_cap);
 +    if (ret || ((gpu_cap & PCI_EXP_LNKCAP_SLS) < 2U))
 +    {
 +        NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
-+                      "CMP50_GEN2: ADOPT_FAIL ret=%d cap=%08x "
-+                      "(locked set still in effect)\n", ret, gpu_cap);
++                      "CMP50_GEN2: ADOPT_FAIL ret=%d cap=%08x tries=%d "
++                      "(locked set still in effect)\n",
++                      ret, gpu_cap, adopt_try);
 +        iounmap(bar0);
 +        return;
 +    }
 +    NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
-+                  "CMP50_GEN2: ADOPT_PASS mode=normal cap=%08x\n", gpu_cap);
++                  "CMP50_GEN2: ADOPT_PASS mode=normal cap=%08x tries=%d\n",
++                  gpu_cap, adopt_try);
 +
 +    ret = pcie_capability_read_word(gpu, PCI_EXP_LNKCTL2, &gpu_ctl2);
 +    if (ret)
@@ -271,7 +289,7 @@ index b771a00..1a2b3c4 100644
  /*
   * Brings up the device on the first file open. Assumes nvl->ldata_lock is held.
   */
-@@ -1521,6 +1776,8 @@
+@@ -1521,6 +1794,8 @@
          goto failed_release_irq;
      }
  
