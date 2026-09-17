@@ -1197,7 +1197,7 @@ diff --git a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c b/src/
 index 0ee595f..48e8c82 100644
 --- a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
 +++ b/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
-@@ -40,6 +40,251 @@
+@@ -40,6 +40,279 @@
  #include "crashcat/crashcat_report.h"
  
  #include "published/turing/tu102/dev_gsp.h"
@@ -1311,6 +1311,34 @@ index 0ee595f..48e8c82 100644
 +    origLinkConfig0 = GPU_REG_RD32(pGpu, CMP50_PCIE_LINK_CONFIG0);
 +    origPlLinkRate = GPU_REG_RD32(pGpu, CMP50_PCIE_PL_LINK_RATE);
 +    origLtssm = GPU_REG_RD32(pGpu, CMP50_PCIE_LTSSM);
++
++    /*
++     * The capability adoption is one-shot: the LTSSM=6 kick below makes the
++     * card regenerate its PCIe config block from whatever the policy regs
++     * hold at that instant. This function runs twice (post-booter and
++     * gsp-ready). On a cold boot the post-booter pass adopts Gen2, then GSP
++     * starts clobbering the policy regs, and a second kick at gsp-ready
++     * re-derives the now-locked set and destroys the Gen2 we just won
++     * (192.168.1.224, 2026-09-17: post-booter CAP=453d02 -> gsp-ready
++     * CAP=453d01). Boots that came up already Gen2 never hit this because
++     * GSP does not fight an already-unlocked block. So once the capability
++     * reads Gen2, do not touch the policy again - only keep the target link
++     * speed latched and return.
++     */
++    if ((GPU_REG_RD32(pGpu, CMP50_PCIE_LINK_CAP) & 0xFU) >= 2U)
++    {
++        NvU32 linkCtrl2 = GPU_REG_RD32(pGpu, CMP50_PCIE_LINK_CTRL2);
++
++        if ((linkCtrl2 & 0xFU) != 2U)
++            GPU_REG_WR32(pGpu, CMP50_PCIE_LINK_CTRL2,
++                         (linkCtrl2 & ~0xFU) | 2U);
++        NV_PRINTF(LEVEL_ERROR,
++                  "CMP50_GEN2: ALREADY_GEN2 phase=%s CAP=%08x LC2=%08x "
++                  "(not re-kicking)\n",
++                  phase, GPU_REG_RD32(pGpu, CMP50_PCIE_LINK_CAP),
++                  GPU_REG_RD32(pGpu, CMP50_PCIE_LINK_CTRL2));
++        return;
++    }
 +
 +    GPU_REG_WR32(pGpu, CMP50_PCIE_PRIV_MISC_1, privMiscWant);
 +    GPU_REG_WR32(pGpu, CMP50_PCIE_XP3G_VALUE0, 0U);
