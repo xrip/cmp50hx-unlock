@@ -285,6 +285,21 @@ itself never survives a GPU reset anyway).
   the kernel grow the bridge windows itself at boot (see also #14's P2P
   recipe). Boards whose firmware window has no headroom need the BIOS
   route — see issue #47 for the ReBarDxe + MMIO-High recipe.
+- Opt-in pre-OS **Gen2 capability unlock**: the `gen2` load option
+  (`efibootmgr -u "gen2"`) or the `50HXG2=ON` firmware variable. The card
+  can regenerate its PCIe capability block only once per power cycle, and
+  on a cold boot GSP re-derives the Gen1 set before anything in the OS can
+  claim it — a driver kick, a 5 s kick loop, a TLS latch and a deferred
+  boot service were all refused (192.168.1.224, 2026-09-17). Boots that did
+  come up at Gen2 had inherited the unlocked block through standby power
+  from an earlier Gen2 session, so only the pre-OS stage breaks that
+  chicken and egg. This applies the policy, kicks the LTSSM and latches the
+  Gen2 target link speed; it does **not** pulse the root port — that is
+  what hung X99/X299 and Ryzen APU hosts in #24/#25 and got the old pre-OS
+  Gen2 removed in v1.1.8. Training the link stays an OS-side job
+  (`cmp50hx-gen2.service`, kernel patch 04, the Windows logon task), which
+  takes well under a second once the capability is unlocked. Any failed
+  check restores every register. Log prefix: `[gen2]`.
 - One card per run: the application unlocks the first `10de:1e09` it
   finds; multi-GPU hosts need an iteration loop (not yet ported).
 - Windows: covered by [`../efi-unlock-windows/`](../efi-unlock-windows/README.md),
