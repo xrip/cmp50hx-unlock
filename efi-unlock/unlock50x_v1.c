@@ -3181,28 +3181,31 @@ build_wpr_meta(GspFwWprMeta *m, UINT64 elfPhys, UINT64 elfSize,
     m->flags = 0x1;                    /* GSP_FW_FLAGS_CLOCK_BOOST */
 }
 
-#define WINDOWS_BOOT_PATH L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi"
+/* Loader ladder used by both handover stages (BlockIo preload and the SFS
+ * fallback). Windows first: every reporter so far boots Windows. Paths the
+ * firmware itself knows (BootOrder) are tried before this list. */
+static const CHAR16 *os_loader_paths[] = {
+    L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi",
+    L"\\EFI\\ubuntu\\shimx64.efi",
+    L"\\EFI\\ubuntu\\grubx64.efi",
+    L"\\EFI\\systemd\\systemd-bootx64.efi",
+    L"\\EFI\\BOOT\\bootx64.efi",
+};
+#define OS_LOADER_PATH_CNT (sizeof(os_loader_paths)/sizeof(os_loader_paths[0]))
 
-/* ==== SFS-free bootmgfw preload — own FAT32 parser over BlockIo ====
- * This platform (X570 GAMING X, AMI F37d) HANGS on SimpleFileSystem
- * calls from loaded applications — hangs occurred on plain file reads
- * unrelated to the unlock. BlockIo ReadBlocks is stable (84 MB fw
- * reads OK). Solution: read bootmgfw.efi into RAM BEFORE the unlock
- * with our own FAT32 parser (MBR/GPT -> ESP -> path with LFN), keep
- * the ESP DevicePath, later LoadImage(SourceBuffer). Zero SFS calls
- * remain anywhere in the hot path.
- * Это железо (X570 GAMING X, AMI F37d) виснет на SimpleFileSystem-операциях
- * из загруженных приложений — история проекта (ранние версии висли на чтении
- * файла НЕЗАВИСИМО от анлока). BlockIo ReadBlocks стабилен (84МБ fw-read ОК).
- *
- * Решение: ЕЩЁ ДО разблокировки читаем bootmgfw.efi своим FAT32-парсером
- * поверх BlockIo (GPT→ESP→каталоги с LFN), держим в ОЗУ. После анлока:
- * LoadImage(DevicePath=<реальный ESP>, SourceBuffer=<ОЗУ>) + StartImage.
- * В нашем коде не остаётся НИ ОДНОЙ SimpleFileSystem-операции. */
+/* ==== SFS-free OS loader preload — own FAT parser over BlockIo ====
+ * Some AMI firmwares (X570 GAMING X F37d, X99-E WS) HANG inside
+ * SimpleFileSystem calls made from a loaded application — plain file reads
+ * unrelated to the unlock hang there too. BlockIo ReadBlocks is stable
+ * (the 84 MB firmware read goes through it). So the OS loader is read into
+ * RAM BEFORE the unlock with our own FAT16/FAT32 parser (partition or
+ * MBR/GPT -> ESP -> path with LFN); afterwards LoadImage(SourceBuffer) +
+ * StartImage hands over without touching SimpleFileSystem at all. */
 
 static UINT8 *g_bmBuf = NULL;
 static UINTN g_bmSize = 0;
 static EFI_DEVICE_PATH *g_bmDp = NULL;
+static const CHAR16 *g_bmPath = NULL;   /* loader path that won, for the log */
 
 static EFI_GUID cmp90BioGuid = EFI_BLOCK_IO_PROTOCOL_GUID;
 static UINT8 cmp90EspGuid[16] = { 0x28,0x73,0x2A,0xC1, 0x1F,0xF8, 0xD2,0x11,
@@ -3262,44 +3265,99 @@ static BOOLEAN cmp90_eqi(const CHAR16 *a, const CHAR16 *b)
     return *a == *b;
 }
 
-/* следующая FAT32-запись таблицы FAT */
+/* Geometry of one FAT volume, parsed once from the BPB. FAT16 ESPs are
+ * common on Linux installs (mkfs.vfat picks FAT16 below ~260 MB), FAT32 is
+ * what Windows setup creates — both must work or the preload silently
+ * gives up and the hangy SFS fallback runs instead. */
+typedef struct {
+    EFI_BLOCK_IO_PROTOCOL *bio;
+    UINT64 lba;             /* partition start LBA */
+    UINT32 bps, spc;
+    UINT32 fatOff;          /* byte offset of FAT #0 */
+    UINT32 dataOff;         /* byte offset of cluster 2 */
+    UINT32 rootOff;         /* FAT16 only: fixed root directory region */
+    UINT32 rootEnts;        /* FAT16 only: entries in that region */
+    UINT32 rootClus;        /* FAT32 only: first cluster of the root dir */
+    UINT32 eocMark;         /* end-of-chain marker (0xFFF8 / 0x0FFFFFF8) */
+    BOOLEAN fat32;
+} Cmp90Fat;
+
 static EFI_STATUS
-cmp90_fat_next(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
-               const UINT8 *bpb, UINT32 clus, UINT32 *next)
+cmp90_fat_open(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart, Cmp90Fat *f)
 {
-    UINT32 bps = bpb[11] | (bpb[12] << 8);
-    UINT32 rsvd = bpb[14] | (bpb[15] << 8);
-    UINT32 fatOff = rsvd * bps + clus * 4;
+    UINT8 bpb[512];
+    UINT32 rsvd, nfats, fatsz, rootEnts, rootDirSz;
+    EFI_STATUS st = cmp90_bio_read(bio, lbaPartStart, 0, 512, bpb);
+
+    if (EFI_ERROR(st)) return st;
+    if (bpb[510] != 0x55 || bpb[511] != 0xAA) return EFI_UNSUPPORTED;
+
+    f->bio = bio;
+    f->lba = lbaPartStart;
+    f->bps = bpb[11] | (bpb[12] << 8);
+    f->spc = bpb[13];
+    rsvd     = bpb[14] | (bpb[15] << 8);
+    nfats    = bpb[16];
+    rootEnts = bpb[17] | (bpb[18] << 8);
+    fatsz    = bpb[22] | (bpb[23] << 8);                  /* FAT12/16 */
+    if (fatsz == 0) {
+        fatsz = bpb[36] | (bpb[37]<<8) | (bpb[38]<<16) | (bpb[39]<<24);
+        f->fat32 = TRUE;
+    } else {
+        f->fat32 = FALSE;
+    }
+    if (f->bps < 512 || f->bps > 4096 || (f->bps & (f->bps - 1)) ||
+        f->spc == 0 || f->spc > 128 || nfats == 0 || nfats > 4 || fatsz == 0)
+        return EFI_UNSUPPORTED;
+
+    f->fatOff = rsvd * f->bps;
+    rootDirSz = f->fat32 ? 0 : ((rootEnts * 32 + f->bps - 1) / f->bps) * f->bps;
+    f->rootOff  = f->fatOff + nfats * fatsz * f->bps;
+    f->dataOff  = f->rootOff + rootDirSz;
+    f->rootEnts = f->fat32 ? 0 : rootEnts;
+    f->rootClus = f->fat32 ? (bpb[44] | (bpb[45]<<8) | (bpb[46]<<16) |
+                              (bpb[47]<<24)) : 0;
+    f->eocMark  = f->fat32 ? 0x0FFFFFF8u : 0xFFF8u;
+    if (f->fat32 && f->rootClus < 2) return EFI_UNSUPPORTED;
+    if (!f->fat32 && rootEnts == 0) return EFI_UNSUPPORTED;
+    return EFI_SUCCESS;
+}
+
+/* next cluster in the chain (FAT32: 32-bit entries, FAT16: 16-bit) */
+static EFI_STATUS
+cmp90_fat_next(Cmp90Fat *f, UINT32 clus, UINT32 *next)
+{
     UINT32 v = 0;
-    EFI_STATUS st = cmp90_bio_read(bio, lbaPartStart, fatOff, 4, &v);
-    if (!EFI_ERROR(st)) *next = v & 0x0FFFFFFFu;
+    UINTN w = f->fat32 ? 4 : 2;
+    EFI_STATUS st = cmp90_bio_read(f->bio, f->lba, f->fatOff + clus * w,
+                                   w, &v);
+    if (!EFI_ERROR(st)) *next = f->fat32 ? (v & 0x0FFFFFFFu) : (v & 0xFFFFu);
     return st;
 }
 
 /* поиск компонента пути в каталоге FAT32 (с поддержкой LFN).
  * dirClus — первый кластер каталога; имя сравнивается без регистра. */
 static EFI_STATUS
-cmp90_fat_dir_find(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
-                   const UINT8 *bpb, UINT32 dirClus,
+cmp90_fat_dir_find(Cmp90Fat *f, UINT32 dirClus,
                    const CHAR16 *name, UINT32 *outClus, UINT64 *outSize)
 {
-    UINT32 bps = bpb[11] | (bpb[12] << 8);
-    UINT32 spc = bpb[13];
-    UINT32 rsvd = bpb[14] | (bpb[15] << 8);
-    UINT32 nfats = bpb[16];
-    UINT32 fatsz = bpb[36] | (bpb[37]<<8) | (bpb[38]<<16) | (bpb[39]<<24);
-    UINT32 dataOff = (rsvd + nfats * fatsz) * bps;
     UINT32 clus = dirClus;
     UINTN guard;
 
-    for (guard = 0; guard < 65536 && clus >= 2 && clus < 0x0FFFFFF8; guard++) {
-        UINTN csz = spc * bps;
-        UINT64 cOff = dataOff + (UINT64)(clus - 2) * spc * bps;
-        UINT8 *buf = cmp90_alloc(csz);
+    for (guard = 0; guard < 65536; guard++) {
+        /* clus == 0 is the FAT16 fixed root directory: a flat region outside
+         * the cluster area, so this walk runs exactly once for it. */
+        UINTN csz = clus ? (UINTN)f->spc * f->bps : (UINTN)f->rootEnts * 32;
+        UINT64 cOff = clus ? f->dataOff + (UINT64)(clus - 2) * f->spc * f->bps
+                           : f->rootOff;
+        UINT8 *buf;
         UINTN e;
         EFI_STATUS st;
+        if (clus && (clus < 2 || clus >= f->eocMark)) return EFI_NOT_FOUND;
+        if (!csz) return EFI_NOT_FOUND;
+        buf = cmp90_alloc(csz);
         if (!buf) return EFI_OUT_OF_RESOURCES;
-        st = cmp90_bio_read(bio, lbaPartStart, cOff, csz, buf);
+        st = cmp90_bio_read(f->bio, f->lba, cOff, csz, buf);
         if (EFI_ERROR(st)) { cmp90_free(buf); return st; }
 
         {
@@ -3365,8 +3423,9 @@ cmp90_fat_dir_find(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
             }
         }
         cmp90_free(buf);
+        if (!clus) return EFI_NOT_FOUND;        /* flat root: one pass only */
         {
-            EFI_STATUS st = cmp90_fat_next(bio, lbaPartStart, bpb, clus, &clus);
+            EFI_STATUS st = cmp90_fat_next(f, clus, &clus);
             if (EFI_ERROR(st)) return st;
         }
     }
@@ -3375,87 +3434,65 @@ cmp90_fat_dir_find(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
 
 /* чтение файла целиком по кластерной цепочке */
 static EFI_STATUS
-cmp90_fat_read_file(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
-                    const UINT8 *bpb, UINT32 firstClus, UINT64 size,
-                    UINT8 *dest)
+cmp90_fat_read_file(Cmp90Fat *f, UINT32 firstClus, UINT64 size, UINT8 *dest)
 {
-    UINT32 bps = bpb[11] | (bpb[12] << 8);
-    UINT32 spc = bpb[13];
-    UINT32 rsvd = bpb[14] | (bpb[15] << 8);
-    UINT32 nfats = bpb[16];
-    UINT32 fatsz = bpb[36] | (bpb[37]<<8) | (bpb[38]<<16) | (bpb[39]<<24);
-    UINT32 dataOff = (rsvd + nfats * fatsz) * bps;
     UINT32 clus = firstClus;
     UINT64 done = 0;
     UINTN guard;
 
     for (guard = 0; guard < 4000000 && done < size && clus >= 2 &&
-                    clus < 0x0FFFFFF8; guard++) {
-        UINT64 cOff = dataOff + (UINT64)(clus - 2) * spc * bps;
-        UINTN take = spc * bps;
+                    clus < f->eocMark; guard++) {
+        UINT64 cOff = f->dataOff + (UINT64)(clus - 2) * f->spc * f->bps;
+        UINTN take = f->spc * f->bps;
         if ((UINT64)take > size - done) take = (UINTN)(size - done);
         {
-            EFI_STATUS st = cmp90_bio_read(bio, lbaPartStart,
+            EFI_STATUS st = cmp90_bio_read(f->bio, f->lba,
                                            cOff, take, dest + done);
             if (EFI_ERROR(st)) return st;
         }
         done += take;
         {
-            EFI_STATUS st = cmp90_fat_next(bio, lbaPartStart, bpb, clus, &clus);
+            EFI_STATUS st = cmp90_fat_next(f, clus, &clus);
             if (EFI_ERROR(st)) return st;
         }
     }
     return (done == size) ? EFI_SUCCESS : EFI_END_OF_FILE;
 }
 
-/* чтение bootmgfw.efi с тома: свой BPB → спуск по пути → кластерная цепочка */
+/* read "\DIR\SUB\FILE.EFI" from a FAT volume: BPB -> directory walk -> data */
 static EFI_STATUS
-cmp90_fat_load_bootmgfw(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
-                        UINT8 **fileBuf, UINTN *fileSize)
+cmp90_fat_load_path(Cmp90Fat *f, const CHAR16 *path,
+                    UINT8 **fileBuf, UINTN *fileSize)
 {
-    STATIC UINT8 bpb[512];
-    UINT32 bps = 0, spc = 0, rsvd = 0, nfats = 0, fatsz = 0, rootClus = 0;
-    static const CHAR16 *comps[4] = {
-        L"EFI", L"Microsoft", L"Boot", L"bootmgfw.efi"
-    };
-    UINT32 cur = 0;
+    UINT32 cur = f->fat32 ? f->rootClus : 0;   /* 0 = FAT16 flat root */
     UINT64 sz = 0;
-    UINTN ci;
+    const CHAR16 *p = path;
     UINT8 *buf = NULL;
     EFI_STATUS st;
+    BOOLEAN last = FALSE;
 
-    st = cmp90_bio_read(bio, lbaPartStart, 0, 512, bpb);
-    if (EFI_ERROR(st)) return st;
-    if (bpb[510] != 0x55 || bpb[511] != 0xAA) return EFI_UNSUPPORTED;
+    while (!last) {
+        CHAR16 comp[64];
+        UINTN n = 0;
+        while (*p == L'\\') p++;
+        while (p[n] && p[n] != L'\\' && n < sizeof(comp)/sizeof(comp[0]) - 1)
+            n++;
+        if (!n || (p[n] && p[n] != L'\\'))      /* empty or oversized name */
+            return EFI_INVALID_PARAMETER;
+        CopyMem(comp, (VOID *)p, n * sizeof(CHAR16));
+        comp[n] = 0;
+        p += n;
+        last = (*p == 0);
 
-    bps   = bpb[11] | (bpb[12] << 8);
-    spc   = bpb[13];
-    rsvd  = bpb[14] | (bpb[15] << 8);
-    nfats = bpb[16];
-    fatsz = bpb[36] | (bpb[37]<<8) | (bpb[38]<<16) | (bpb[39]<<24);
-    rootClus = bpb[44] | (bpb[45]<<8) | (bpb[46]<<16) | (bpb[47]<<24);
-
-    if (bps < 512 || bps > 4096 || (bps & (bps-1)) ||
-        spc == 0 || spc > 128 || nfats == 0 || nfats > 4 ||
-        fatsz == 0 || rootClus < 2)
-        return EFI_UNSUPPORTED;
-
-    cur = rootClus;
-    for (ci = 0; ci < 4; ci++) {
-        Print(L"[preload] looking for \"%s\"...\n", comps[ci]);
-        st = cmp90_fat_dir_find(bio, lbaPartStart, bpb, cur,
-                                comps[ci], &cur, &sz);
-        if (EFI_ERROR(st)) {
-            Print(L"[preload] not found (%r)\n", st);
-            return st;
-        }
-        if (ci < 3 && sz != 0) return EFI_NOT_FOUND; /* ждали каталог */
+        st = cmp90_fat_dir_find(f, cur, comp, &cur, &sz);
+        if (EFI_ERROR(st)) return st;
+        if (!last && sz != 0) return EFI_NOT_FOUND;   /* expected a directory */
     }
     if (sz == 0 || sz > 0x02000000ull) return EFI_BAD_BUFFER_SIZE;
 
     buf = cmp90_alloc((UINTN)sz);
     if (!buf) return EFI_OUT_OF_RESOURCES;
-    st = cmp90_fat_read_file(bio, lbaPartStart, bpb, cur, sz, buf);
+    st = cmp90_fat_read_file(f, cur, sz, buf);
     if (EFI_ERROR(st)) { cmp90_free(buf); return st; }
 
     /* PE-санити: 'MZ' и e_lfanew → 'PE\0\0' */
@@ -3466,19 +3503,133 @@ cmp90_fat_load_bootmgfw(EFI_BLOCK_IO_PROTOCOL *bio, UINT64 lbaPartStart,
     return EFI_SUCCESS;
 }
 
-/* обход всех BlockIo-дисков: GPT → ESP → загрузить bootmgfw в ОЗУ.
- * DevicePath запоминаем от ДИСКА с найденным ESP (для LoadImage). */
-static void preload_bootmgfw(void)
+/* Candidate loaders the firmware itself boots: BootOrder -> Boot#### -> the
+ * FILEPATH node of each entry. Read-only GetVariable calls, so none of the
+ * NVRAM-write hangs seen on these boards apply. This is what lets custom
+ * installs (rEFInd, fedora/debian shim, renamed Windows entries) hand over
+ * without us guessing paths; our own entry is skipped. */
+#define BOOT_PATH_MAX 8
+static CHAR16 *g_bootPaths[BOOT_PATH_MAX];
+static UINTN   g_bootPathCnt;
+
+static BOOLEAN path_is_our_efi(const CHAR16 *p)
 {
-    EFI_HANDLE *H = NULL;
+    const CHAR16 *base = p, *q;
+    for (q = p; *q; q++)
+        if (*q == L'\\') base = q + 1;
+    return cmp90_eqi(base, L"50HXUNLK.EFI");
+}
+
+static void collect_boot_order_paths(void)
+{
+    static EFI_GUID gvGuid = EFI_GLOBAL_VARIABLE;
+    static UINT8 opt[1024];
+    UINT16 order[64], current = 0xFFFF;
+    UINTN sz = sizeof(current), i;
+    EFI_STATUS st;
+
+    uefi_call_wrapper(RT->GetVariable, 5, L"BootCurrent", &gvGuid,
+                      NULL, &sz, &current);
+    sz = sizeof(order);
+    st = uefi_call_wrapper(RT->GetVariable, 5, L"BootOrder", &gvGuid,
+                           NULL, &sz, order);
+    if (EFI_ERROR(st)) { Print(L"[preload] BootOrder: %r\n", st); return; }
+
+    for (i = 0; i < sz / sizeof(UINT16) && g_bootPathCnt < BOOT_PATH_MAX; i++) {
+        CHAR16 name[9];
+        UINTN osz = sizeof(opt), off;
+        UINT32 attr = 0;
+        EFI_DEVICE_PATH *dp;
+
+        if (order[i] == current) continue;          /* that entry is us */
+        SPrint(name, sizeof(name), L"Boot%04X", order[i]);
+        if (EFI_ERROR(uefi_call_wrapper(RT->GetVariable, 5, name, &gvGuid,
+                                        NULL, &osz, opt)))
+            continue;
+        if (osz < 8) continue;
+        CopyMem(&attr, opt, 4);
+        if (!(attr & 1)) continue;                  /* LOAD_OPTION_ACTIVE off */
+        /* EFI_LOAD_OPTION: attributes, path list length, description, path */
+        off = 6;
+        while (off + 1 < osz && (opt[off] || opt[off + 1])) off += 2;
+        off += 2;
+        dp = (EFI_DEVICE_PATH *)(opt + off);
+        while ((UINT8 *)dp + 4 <= opt + osz && !IsDevicePathEnd(dp) &&
+               DevicePathNodeLength(dp) >= 4) {
+            if (DevicePathType(dp) == MEDIA_DEVICE_PATH &&
+                DevicePathSubType(dp) == MEDIA_FILEPATH_DP) {
+                CHAR16 *fp = ((FILEPATH_DEVICE_PATH *)dp)->PathName;
+                CHAR16 *keep = (*fp && !path_is_our_efi(fp)) ? StrDuplicate(fp)
+                                                             : NULL;
+                if (keep) {
+                    Print(L"[preload] %s -> %s\n", name, keep);
+                    g_bootPaths[g_bootPathCnt++] = keep;
+                }
+                break;
+            }
+            dp = NextDevicePathNode(dp);
+        }
+    }
+}
+
+/* try every candidate loader on one FAT volume; the first hit is taken */
+static BOOLEAN preload_try_volume(EFI_HANDLE h, EFI_BLOCK_IO_PROTOCOL *bio,
+                                  UINT64 lbaStart)
+{
+    Cmp90Fat f;
+    UINTN i;
+
+    if (EFI_ERROR(cmp90_fat_open(bio, lbaStart, &f)))
+        return FALSE;
+
+    for (i = 0; i < g_bootPathCnt + OS_LOADER_PATH_CNT; i++) {
+        const CHAR16 *path = (i < g_bootPathCnt)
+                           ? g_bootPaths[i]
+                           : os_loader_paths[i - g_bootPathCnt];
+        UINT8 *fb = NULL;
+        UINTN fsz = 0;
+
+        if (EFI_ERROR(cmp90_fat_load_path(&f, path, &fb, &fsz)))
+            continue;
+        /* issue #36: the Windows installer also copies our EFI to
+         * \EFI\Boot\bootx64.efi — loading that would restart us in a loop */
+        if (fsz == g_ourImageSize) { cmp90_free(fb); continue; }
+        g_bmBuf = fb;
+        g_bmSize = fsz;
+        g_bmPath = path;
+        g_bmDp = FileDevicePath(h, (CHAR16 *)path);
+        Print(L"[preload] OK %s, %d bytes in RAM\n", path, fsz);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* Walk every BlockIo volume — our own boot volume first, since that ESP
+ * holds the OS loader on virtually every install — and keep the loader in
+ * RAM. The DevicePath is kept too: LoadImage hands the real ESP to the
+ * loader, which Windows Boot Manager needs to find its BCD. */
+static void preload_os_loader(EFI_HANDLE ImageHandle)
+{
+    EFI_HANDLE *H = NULL, self = NULL;
     UINTN n = 0, k;
     EFI_STATUS st;
 
-    Print(L"[preload v2.89] BlockIo enumeration (SFS not used!)...\n");
+    collect_boot_order_paths();
+    {
+        EFI_LOADED_IMAGE *li = NULL;
+        if (!uefi_call_wrapper(BS->HandleProtocol, 3, ImageHandle,
+                               &LoadedImageProtocol, (VOID **)&li) && li)
+            self = li->DeviceHandle;
+    }
+
+    Print(L"[preload] BlockIo enumeration (SFS not used)...\n");
     st = uefi_call_wrapper(BS->LocateHandleBuffer, 5, ByProtocol,
                            &cmp90BioGuid, NULL, &n, &H);
     if (EFI_ERROR(st)) { Print(L"[preload] LocateHandleBuffer: %r\n", st); return; }
     Print(L"[preload] block devices: %d\n", n);
+
+    for (k = 0; k < n; k++)
+        if (H[k] == self) { H[k] = H[0]; H[0] = self; break; }
 
     for (k = 0; k < n && !g_bmBuf; k++) {
         EFI_BLOCK_IO_PROTOCOL *bio = NULL;
@@ -3488,29 +3639,18 @@ static void preload_bootmgfw(void)
                               (VOID **)&bio) || !bio || !bio->Media)
             continue;
         isPart = bio->Media->LogicalPartition;
-        Print(L"[preload] handle %d: bs=%d last=%llu removable=%d logical=%d\n",
-              k, bio->Media->BlockSize,
+        Print(L"[preload] handle %d%s: bs=%d last=%llu removable=%d logical=%d\n",
+              k, (H[k] == self) ? L" (ours)" : L"", bio->Media->BlockSize,
               (UINT64)bio->Media->LastBlock,
               bio->Media->RemovableMedia, isPart);
 
-        /* v2.90: пробуем КАЖДЫЙ хендл как FAT-том напрямую (партиционные
-         * хендлы маппятся с LBA0 своего раздела!). Это покрывает MBR-диски,
-         * GPT-ESP без парсинга таблиц и superfloppy. */
-        {
-            UINT8 *fb = NULL; UINTN fsz = 0;
-            EFI_STATUS stf = cmp90_fat_load_bootmgfw(bio, 0, &fb, &fsz);
-            if (!EFI_ERROR(stf)) {
-                g_bmBuf = fb; g_bmSize = fsz;
-                g_bmDp = FileDevicePath(H[k], WINDOWS_BOOT_PATH);
-                Print(L"[preload] OK bootmgfw.efi %d bytes in RAM (handle %d, direct)\n",
-                      fsz, k);
-                break;
-            }
-            if (stf != EFI_UNSUPPORTED && stf != EFI_NOT_FOUND)
-                Print(L"[preload] handle %d FAT: %r\n", k, stf);
-        }
+        /* every handle is tried as a FAT volume directly: partition handles
+         * map to LBA 0 of their own partition, which covers MBR disks,
+         * GPT ESPs without parsing tables, and superfloppy media */
+        if (preload_try_volume(H[k], bio, 0))
+            break;
 
-        /* для ЦЕЛЫХ дисков дополнительно — GPT: ESP-разделы внутри */
+        /* whole disks additionally: find the ESP through the GPT */
         if (!isPart) {
             STATIC UINT8 hdr[512];
             UINT64 partEntLba, espLba = 0;
@@ -3541,20 +3681,13 @@ static void preload_bootmgfw(void)
                 }
             }
             if (!espLba) { Print(L"[preload] ESP not found in GPT\n"); continue; }
-            Print(L"[preload] ESP @LBA %llu - reading bootmgfw...\n", espLba);
-
-            {
-                UINT8 *fb = NULL; UINTN fsz = 0;
-                st = cmp90_fat_load_bootmgfw(bio, espLba, &fb, &fsz);
-                if (EFI_ERROR(st)) { Print(L"[preload] bootmgfw: %r\n", st); continue; }
-                g_bmBuf = fb; g_bmSize = fsz;
-                g_bmDp = FileDevicePath(H[k], WINDOWS_BOOT_PATH);
-                Print(L"[preload] OK bootmgfw.efi %d bytes in RAM (GPT ESP@%llu)\n",
-                      fsz, espLba);
-            }
+            Print(L"[preload] ESP @LBA %llu - looking for a loader...\n", espLba);
+            preload_try_volume(H[k], bio, espLba);
         }
     }
     if (H) FreePool(H);
+    if (!g_bmBuf)
+        Print(L"[preload] no OS loader found on any volume\n");
 }
 
 static EFI_STATUS chainload_os(EFI_HANDLE ImageHandle);
@@ -3604,13 +3737,14 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
     if (!g_bmBuf || !g_bmSize || !g_bmDp)
         Print(L"chainload-pre: preload empty\n");
     else {
-        Print(L"chainload-pre: LoadImage from RAM (%d bytes)...\n", g_bmSize);
+        Print(L"chainload-pre: LoadImage %s from RAM (%d bytes)...\n",
+              g_bmPath, g_bmSize);
         st = uefi_call_wrapper(BS->LoadImage, 6, FALSE, ImageHandle,
                                g_bmDp, g_bmBuf, g_bmSize, &h);
         if (EFI_ERROR(st)) {
             Print(L"chainload-pre: LoadImage: %r\n", st);
         } else {
-            Print(L"chainload-pre: StartImage Windows Boot Manager...\n");
+            Print(L"chainload-pre: StartImage %s...\n", g_bmPath);
             st = uefi_call_wrapper(BS->StartImage, 3, h, NULL, NULL);
             Print(L"chainload-pre: StartImage returned: %r\n", st);
             if (!EFI_ERROR(st))
@@ -3638,17 +3772,6 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
  *      (Ubuntu shim first, then grub, systemd-boot, generic \EFI\BOOT)
  *   2) any error -> return to firmware: BDS continues BootOrder to the
  *      next entry without a POST. */
-
-static const CHAR16 *os_loader_paths[] = {
-    /* Windows first: every reporter so far boots Windows, and rung 1 already
-     * preloads bootmgfw from RAM — this is its SFS twin for when that
-     * preload comes up empty (#43/#44). Nobody needs the proxmox path. */
-    L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi",
-    L"\\EFI\\ubuntu\\shimx64.efi",
-    L"\\EFI\\ubuntu\\grubx64.efi",
-    L"\\EFI\\systemd\\systemd-bootx64.efi",
-    L"\\EFI\\BOOT\\bootx64.efi",
-};
 
 static BOOLEAN
 is_own_image(EFI_HANDLE ImageHandle, EFI_HANDLE FsHandle, const CHAR16 *Path)
@@ -3785,10 +3908,15 @@ chainload_os_one(EFI_HANDLE ImageHandle, EFI_HANDLE FsHandle, const CHAR16 *Path
 static EFI_STATUS
 chainload_os(EFI_HANDLE ImageHandle)
 {
-    EFI_HANDLE *Handles = NULL;
+    EFI_HANDLE *Handles = NULL, self = NULL;
     UINTN n = 0, i, p;
     EFI_STATUS Status;
     static EFI_GUID FsGuid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE *li = NULL;
+
+    if (!uefi_call_wrapper(BS->HandleProtocol, 3, ImageHandle,
+                           &LoadedImageProtocol, (VOID **)&li) && li)
+        self = li->DeviceHandle;
 
     Print(L"chainload: enumerating SimpleFileSystem handles...\n");
     Status = uefi_call_wrapper(BS->LocateHandleBuffer, 5,
@@ -3811,14 +3939,22 @@ chainload_os(EFI_HANDLE ImageHandle)
             }
         }
     }
+    /* our own volume first: it holds the loader on virtually every install,
+     * and probing unrelated volumes is exactly where SFS hangs (#43/#47) */
     for (i = 0; i < n; i++)
-        for (p = 0; p < sizeof(os_loader_paths)/sizeof(os_loader_paths[0]); p++) {
+        if (Handles[i] == self) { Handles[i] = Handles[0]; Handles[0] = self; break; }
+
+    for (i = 0; i < n; i++)
+        for (p = 0; p < g_bootPathCnt + OS_LOADER_PATH_CNT; p++) {
+            const CHAR16 *path = (p < g_bootPathCnt)
+                               ? g_bootPaths[p]
+                               : os_loader_paths[p - g_bootPathCnt];
             /* issue #47: on some AMI firmwares the SFS calls below hang —
              * this marker is the last line printed before each risky step */
-            Print(L"chainload: FS#%d: probe %s...\n", (INT32)i, os_loader_paths[p]);
-            if (is_our_binary(ImageHandle, Handles[i], os_loader_paths[p]))
+            Print(L"chainload: FS#%d: probe %s...\n", (INT32)i, path);
+            if (is_our_binary(ImageHandle, Handles[i], path))
                 continue;       /* never chainload ourselves */
-            Status = chainload_os_one(ImageHandle, Handles[i], os_loader_paths[p]);
+            Status = chainload_os_one(ImageHandle, Handles[i], path);
             if (!EFI_ERROR(Status)) {
                 if (Handles) FreePool(Handles);
                 return Status;
@@ -4416,6 +4552,12 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     returnToGrub = u40x_has_load_option(ImageHandle, L"--return-to-grub");
     if (returnToGrub)
         Print(L"[50HX] GRUB handoff mode: internal chainload disabled\n");
+    else
+        /* Read the OS loader into RAM BEFORE the unlock: the SFS fallback in
+         * chainload_preloaded() hangs on some AMI firmwares, so this is the
+         * path that must succeed. The call was lost when the 90HX branch was
+         * dropped (fffb5b9), which left every boot on the hangy fallback. */
+        preload_os_loader(ImageHandle);
 
     /* ---------- [1] 找卡（黑盒 fast-probe + 有界） ---------- */
     if (!u40x_find_gpu()) {

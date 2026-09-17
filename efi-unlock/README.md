@@ -111,16 +111,20 @@ Mine*, DOI 10.5281/zenodo.20916112):
    signature trips the canary; the ROP chain opens the FECS PLM.
 8. Host writes `SS0 = 0x88888888` (`0x409664`), `SS1 = 0x8`
    (`0x40966c`), sanitizes SEC2 back to cold state.
-9. **Chainloads the OS with no POST in between** (Ubuntu shim first, then
-   grub, systemd-boot, generic `\EFI\BOOT\bootx64.efi`; never itself) so
-   the unlocked state survives into the OS. Last resort: return to
-   firmware and let BDS continue BootOrder.
+9. **Chainloads the OS with no POST in between** so the unlocked state
+   survives into the OS. The loader is read into RAM *before* the unlock
+   with an own FAT16/FAT32 parser over BlockIo, because SimpleFileSystem
+   calls hang on some AMI firmwares (#43/#47). Candidates, in order: the
+   file paths of the firmware's own `BootOrder` entries (so custom
+   installs boot what they always booted), then `bootmgfw.efi`, Ubuntu
+   shim, grub, systemd-boot, `\EFI\BOOT\bootx64.efi` — our own boot
+   volume first, never our own binary. Last resort: return to firmware
+   and let BDS continue BootOrder.
 
 Differences from the 40HX v70 baseline: device `10de:1e09` only; chipId0
 `0x162000A1` (NV162, confirmed live via BOOT0); WPR meta fbSize 10 GB;
 native TU102 FWSEC (see extraction below; FRTS `0x27FE00000`, WPR2
-`0x027fe000/0x027fee00`); FWSEC runs only when WPR2 is down; Linux
-chainload ladder instead of `bootmgfw.efi`.
+`0x027fe000/0x027fee00`); FWSEC runs only when WPR2 is down.
 
 The Booter image, V67 payload, GSP bootloader, and SEC2 BL ucode are
 byte-identical to the 40HX project's blobs (the TU102 Booter hash
