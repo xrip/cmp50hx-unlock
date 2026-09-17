@@ -8,6 +8,8 @@
 #   --card cmp50hx           force the card instead of auto-detecting
 #   --idle-governor          also enable the optional idle P-state governor,
 #                            which drops idle power to about 2 W (see idle-governor/)
+#   --rebar-32g              ask for a 32 GiB BAR1 instead of the default 16 GiB
+#                            (selector 9; needs a host that can place the window)
 #
 # What it does, in order:
 #   1. detects the card (or takes --card cmp50hx)
@@ -39,6 +41,7 @@ trap 'die "install failed at line ${LINENO}; see output above"' ERR
 
 card=''
 idle_governor=0
+rebar_selector=8
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --card)
@@ -51,13 +54,17 @@ while [[ $# -gt 0 ]]; do
             idle_governor=1
             shift
             ;;
+        --rebar-32g)
+            rebar_selector=9
+            shift
+            ;;
         -h|--help)
             awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' \
                 "${BASH_SOURCE[0]}"
             exit 0
             ;;
         *)
-            die "unknown argument: $1 (supported: --card, --idle-governor)"
+            die "unknown argument: $1 (supported: --card, --idle-governor, --rebar-32g)"
             ;;
     esac
 done
@@ -241,7 +248,9 @@ done
 printf 'blacklist nouveau\n' > /etc/modprobe.d/cmp-unlock.conf
 
 # the patched cmp50hx module carries the ReBAR size as a module option
-printf 'options nvidia cmp50_rebar_size=8\n' > /etc/modprobe.d/cmp50hx-unlock.conf
+printf 'options nvidia cmp50_rebar_size=%s\n' "${rebar_selector}" \
+    > /etc/modprobe.d/cmp50hx-unlock.conf
+log "BAR1 selector ${rebar_selector} ($(( 1 << (rebar_selector + 6) )) MiB)"
 depmod -a "${krel}"
 
 [[ "$(modinfo -F version nvidia)" == "${driver_version}" ]] || die "installed nvidia.ko has the wrong version"

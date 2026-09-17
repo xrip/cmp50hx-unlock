@@ -66,7 +66,10 @@ The CMP path is now also working, through the NVIDIA kernel module rather than
 UEFI. On PCI ID `10de:1e09`, module parameter `cmp50_rebar_size=8` changes the
 TU102 XVE ReBAR selector at BAR0 `0x88dcc` from `0` to `8` and its size mask at
 `0x88bbc` from `0x400` to `0x7fc00`. The normal NVIDIA BAR resize path then
-rebuilds the bridge window and assigns a 16 GiB BAR1 aperture. The earlier
+rebuilds the bridge window and assigns a 16 GiB BAR1 aperture. Selector 9
+(32 GiB, `install.sh --rebar-32g`) works the same way and was proven on the
+20/22 GB mods in issue #47; the host must be able to place the larger
+prefetchable window. The earlier
 PSTRAPS path at `0x101000`/`0x10100c` did not accept the size write; it is not
 used by the working patch.
 

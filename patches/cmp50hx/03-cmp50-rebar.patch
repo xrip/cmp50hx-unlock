@@ -24,12 +24,12 @@ index 82338b8..a848f9f 100644
 +
 +/*
 + * The selector is added to the PCI ReBAR base encoding (6). Thus selector 1
-+ * is 128 MiB and selector 8 is 16 GiB. Zero keeps the stock XVE state.
++ * is 128 MiB, 8 is 16 GiB, 9 is 32 GiB. Zero keeps the stock XVE state.
 + */
 +static unsigned int cmp50_rebar_size = 8;
 +module_param(cmp50_rebar_size, uint, 0444);
 +MODULE_PARM_DESC(cmp50_rebar_size,
-+    "CMP 50HX BAR1 selector (0=off, 1..8=128MiB..16GiB)");
++    "CMP 50HX BAR1 selector (0=off, 1..9=128MiB..32GiB)");
 +
 +static int nv_cmp50_unlock_bar1_resize
 +(
@@ -54,10 +54,10 @@ index 82338b8..a848f9f 100644
 +        return 0;
 +    }
 +
-+    if (selector > 8)
++    if (selector > 9)
 +    {
 +        nv_printf(NV_DBG_ERRORS,
-+            "NVRM: CMP50_REBAR: bad selector %u; use 0..8\n", selector);
++            "NVRM: CMP50_REBAR: bad selector %u; use 0..9\n", selector);
 +        return -EINVAL;
 +    }
 +
