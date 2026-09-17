@@ -140,6 +140,17 @@ the card's target speed and retrains until the link is at Gen2 x4. Watch
 it with `journalctl -u cmp50hx-gen2 -b`; a `PASS` line means the link is
 at 5.0 GT/s.
 
+**Stuck at Gen1 (2.5 GT/s) after every cold boot?** Check the BIOS first:
+set the GPU slot's **PCIe link speed to Gen2** (not Auto/Gen1). The card
+only keeps its Gen2 capability through GSP boot when the link policy
+registers come up in the Gen2-ready state (`PL_LINK_RATE` bit 20 clear),
+and that bit is hardware-controlled — no driver or EFI write can change
+it (proven on an X79 host 2026-09-17: with the BIOS slot set to Gen2 the
+same patch stack trains 5.0 GT/s on every cold boot; without it, nothing
+OS-side could recover Gen2 after a real power-off). The dmesg tell is
+`CMP50_GEN2: POLICY_PASS phase=post-booter … PL=00340032` (bit 20 set =
+locked) versus `PL=00240032` (Gen2 will stick).
+
 When the installer prints `PASS_CMP_INITRAMFS`, reboot to load the patched
 module at boot:
 

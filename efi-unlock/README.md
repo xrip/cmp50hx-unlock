@@ -233,7 +233,7 @@ resort), which remains the default for BootNext and BootOrder installations.
 > pre-OS on any host. An entry that still passes `--no-gen2` boots fine —
 > unknown load-option text is ignored. Gen2 comes from the OS side (Windows
 > BYOVD logon task, Linux `cmp50hx-gen2.service` / kernel patch 04); the log
-> prints `[gen2] not attempted pre-OS — OS-side Gen2 only (issue #25)`.
+> prints `[gen2] not attempted pre-OS - OS-side Gen2 only (issue #25)`.
 
 ### Rollback
 
@@ -285,21 +285,16 @@ itself never survives a GPU reset anyway).
   the kernel grow the bridge windows itself at boot (see also #14's P2P
   recipe). Boards whose firmware window has no headroom need the BIOS
   route — see issue #47 for the ReBarDxe + MMIO-High recipe.
-- Opt-in pre-OS **Gen2 capability unlock**: the `gen2` load option
-  (`efibootmgr -u "gen2"`) or the `50HXG2=ON` firmware variable. The card
-  can regenerate its PCIe capability block only once per power cycle, and
-  on a cold boot GSP re-derives the Gen1 set before anything in the OS can
-  claim it — a driver kick, a 5 s kick loop, a TLS latch and a deferred
-  boot service were all refused (192.168.1.224, 2026-09-17). Boots that did
-  come up at Gen2 had inherited the unlocked block through standby power
-  from an earlier Gen2 session, so only the pre-OS stage breaks that
-  chicken and egg. This applies the policy, kicks the LTSSM and latches the
-  Gen2 target link speed; it does **not** pulse the root port — that is
-  what hung X99/X299 and Ryzen APU hosts in #24/#25 and got the old pre-OS
-  Gen2 removed in v1.1.8. Training the link stays an OS-side job
-  (`cmp50hx-gen2.service`, kernel patch 04, the Windows logon task), which
-  takes well under a second once the capability is unlocked. Any failed
-  check restores every register. Log prefix: `[gen2]`.
+- **Gen2 is OS-side only** — re-confirmed on hardware 2026-09-17: the
+  XP3G privilege gate (BAR0 `0x8e1b0`) reads `0xffffff8f` (closed) at the
+  pre-OS stage and refuses writes there; it is opened by GSP-RM only
+  inside the OS, so no EFI-side register sequence can unlock the PCIe
+  capability. For a host stuck at Gen1 after a cold boot the fix is in
+  the BIOS: set the **PCIe slot link speed to Gen2** (not Auto/Gen1) —
+  that makes `PL_LINK_RATE` come up `0x00240032` so the post-booter
+  adoption sticks and GSP keeps it (verified on an X79 host: 2.5→5.0
+  GT/s, H2D 0.80→1.59 GB/s). The unlock itself is kernel patch 04 +
+  `cmp50hx-gen2.service` (Linux) or the Windows logon task.
 - One card per run: the application unlocks the first `10de:1e09` it
   finds; multi-GPU hosts need an iteration loop (not yet ported).
 - Windows: covered by [`../efi-unlock-windows/`](../efi-unlock-windows/README.md),

@@ -4368,140 +4368,6 @@ static EFI_STATUS u40x_build_radix(UINT64 dataPhys, UINT64 dataSize,
 #define XVE_CFG_SEL_MASK 0x0000000FU
 #define XVE_CFG_ENABLE   0x80000000U
 
-/* ==== pre-OS Gen2 unlock (opt-in "gen2" / 50HXG2="ON") ====
- * The card hands the OS a PCIe capability block that says Gen1. The driver
- * can unlock it only once per power cycle, and on a cold boot GSP re-derives
- * the locked set at its gsp-ready phase before anything in the OS can win
- * that race (192.168.1.224, 2026-09-17: driver kick, a 5 s kick loop, a TLS
- * latch and a deferred boot service all refused after gsp-ready). Boots that
- * DID come up at Gen2 had inherited the unlocked block through standby power
- * from an earlier Gen2 session - a chicken and egg that only the pre-OS stage
- * can break, because no GSP is running here to revert anything.
- *
- * Deliberately NOT done here: the root-port retrain pulse. That is what hung
- * X99/X299 and Ryzen APU hosts in #24/#25 and got the old pre-OS Gen2 removed
- * in v1.1.8. We only leave the card advertising Gen2 with its target link
- * speed latched; the OS side (cmp50hx-gen2.service, kernel patch 04, the
- * Windows logon task) trains the link in well under a second. */
-#define G2_XP3G_PLM   0x8e1b0UL      /* privilege gate: must read 0xffffffff */
-#define G2_XP3G_OVR0  0x8e110UL
-#define G2_XP3G_VAL0  0x8e120UL
-#define G2_MISC1      0x8841cUL
-#define G2_VSEC_HIER  0x88610UL
-#define G2_CYA0       0x8c2c0UL
-#define G2_CFG0       0x8c040UL
-#define G2_PL_RATE    0x8c1c0UL
-#define G2_LTSSM      0x8872cUL
-#define G2_LINK_CAP   0x88084UL      /* BAR0 mirror of PCIe LNKCAP */
-#define G2_LINK_CTRL2 0x880a8UL      /* BAR0 mirror of PCIe LNKCTL2 */
-
-static BOOLEAN
-u40x_gen2_enabled(EFI_HANDLE IH)
-{
-    static EFI_GUID gvGuid = EFI_GLOBAL_VARIABLE;
-    UINTN sz = 8;
-    CHAR16 buf[4] = {0, 0, 0, 0};
-    UINT32 attr = 0;
-    EFI_STATUS st;
-
-    if (IH && u40x_has_load_option(IH, L"gen2"))
-        return TRUE;
-    st = uefi_call_wrapper(RT->GetVariable, 5, L"50HXG2", &gvGuid,
-                           &attr, &sz, buf);
-    return !EFI_ERROR(st) && sz >= 4 && buf[0] == L'O' && buf[1] == L'N';
-}
-
-static VOID
-u40x_gen2_try(EFI_HANDLE IH)
-{
-    UINT32 plm, ovr0, val0, misc1, hier, cya0, cfg0, pl, cap, lc2;
-    BOOLEAN gateForced = FALSE;
-
-    if (!u40x_gen2_enabled(IH))
-        return;
-
-    plm = mmio_read32(G2_XP3G_PLM);
-    Print(L"[gen2] XP3G_PLM=0x%08x CAP=0x%08x LC2=0x%08x\n",
-          plm, mmio_read32(G2_LINK_CAP), mmio_read32(G2_LINK_CTRL2));
-    if (plm != 0xFFFFFFFFU) {
-        /* The gate is opened GSP-side ~5 s into OS boot; at the pre-OS stage
-         * it reads locked (0xffffff8f on 192.168.1.224). Try to force it
-         * open here - if the PLM is writable at our privilege level the rest
-         * can proceed, otherwise pre-OS Gen2 is simply not reachable. The
-         * original value is put back on any later failure. */
-        mmio_write32(G2_XP3G_PLM, 0xFFFFFFFFU);
-        (void)mmio_read32(G2_XP3G_PLM);
-        if (mmio_read32(G2_XP3G_PLM) != 0xFFFFFFFFU) {
-            Print(L"[gen2] privilege gate stuck closed (0x%08x) - skip\n",
-                  mmio_read32(G2_XP3G_PLM));
-            mmio_write32(G2_XP3G_PLM, plm);
-            return;
-        }
-        gateForced = TRUE;
-        Print(L"[gen2] forced the privilege gate open\n");
-    }
-
-    ovr0  = mmio_read32(G2_XP3G_OVR0);
-    val0  = mmio_read32(G2_XP3G_VAL0);
-    misc1 = mmio_read32(G2_MISC1);
-    hier  = mmio_read32(G2_VSEC_HIER);
-    cya0  = mmio_read32(G2_CYA0);
-    cfg0  = mmio_read32(G2_CFG0);
-    pl    = mmio_read32(G2_PL_RATE);
-
-    mmio_write32(G2_MISC1, (misc1 | ((1U << 11) | (1U << 13))) &
-                           ~((1U << 12) | (1U << 14)));
-    mmio_write32(G2_XP3G_VAL0, 0U);
-    mmio_write32(G2_XP3G_OVR0, 1U);
-    mmio_write32(G2_VSEC_HIER, (hier & ~(1U << 12)) | 1U);
-    mmio_write32(G2_CYA0, cya0 & ~(1U << 2));
-    mmio_write32(G2_CFG0, (cfg0 & ~0x000C0000U) | (2U << 18));
-    mmio_write32(G2_PL_RATE, (pl & ~0x00060000U) | 0x00040000U);
-
-    if (mmio_read32(G2_XP3G_OVR0) != 1U ||
-        (mmio_read32(G2_VSEC_HIER) & ((1U << 12) | 1U)) != 1U ||
-        (mmio_read32(G2_CYA0) & (1U << 2)) != 0U ||
-        ((mmio_read32(G2_CFG0) >> 18) & 3U) != 2U ||
-        (mmio_read32(G2_PL_RATE) & 0x00060000U) != 0x00040000U) {
-        Print(L"[gen2] policy did not latch (CFG=0x%08x PL=0x%08x) - revert\n",
-              mmio_read32(G2_CFG0), mmio_read32(G2_PL_RATE));
-        goto revert;
-    }
-
-    /* LTSSM kick: the card regenerates its PCIe config block from the policy */
-    mmio_write32(G2_LTSSM, 6U);
-    (void)mmio_read32(G2_LTSSM);
-    uefi_call_wrapper(BS->Stall, 1, 50000);
-
-    cap = mmio_read32(G2_LINK_CAP);
-    if ((cap & 0xFU) < 2U) {
-        Print(L"[gen2] capability still Gen1 (CAP=0x%08x) - revert\n", cap);
-        goto revert;
-    }
-
-    /* Latch the Gen2 target link speed. Only accepted while the capability
-     * reads Gen2 - with the locked set both this mirror and the config
-     * register silently drop the write. No retrain here (see above). */
-    lc2 = mmio_read32(G2_LINK_CTRL2);
-    if ((lc2 & 0xFU) != 2U)
-        mmio_write32(G2_LINK_CTRL2, (lc2 & ~0xFU) | 2U);
-    Print(L"[gen2] OK: CAP=0x%08x LC2=0x%08x - OS trains the link\n",
-          cap, mmio_read32(G2_LINK_CTRL2));
-    return;
-
-revert:
-    mmio_write32(G2_PL_RATE, pl);
-    mmio_write32(G2_CFG0, cfg0);
-    mmio_write32(G2_CYA0, cya0);
-    mmio_write32(G2_VSEC_HIER, hier);
-    mmio_write32(G2_XP3G_VAL0, val0);
-    mmio_write32(G2_XP3G_OVR0, ovr0);
-    mmio_write32(G2_MISC1, misc1);
-    if (gateForced)
-        mmio_write32(G2_XP3G_PLM, plm);   /* close the gate we forced open */
-    (void)mmio_read32(G2_MISC1);
-}
-
 /* Config access MUST reuse the GPU's discovery encode: cfg_read/write32 go
  * through gRb with one fixed layout and return zeros on CF8-found (enc=2)
  * hosts — the issue #47 log showed cmd=0x0 / BAR1=0x0 on a live card. */
@@ -4939,20 +4805,22 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     mmio_write32(SEC2_ENGINE, 0x0);
     for (i = 0; i < 16; i++) mmio_read32(SEC2_ENGINE);
 
-    /* ---------- [10.5] v1.60: PCIe Gen2 — removed in v1.1.8 (issue #25) --
+    /* ---------- [10.5] PCIe Gen2 - OS-side only (removed in v1.1.8,
+     * re-tested and re-confirmed dead 2026-09-17) -----------------------
      * The pre-OS Gen2 attempt never trained on any host (X79: LNKCTL2
      * reads back read-only; AGESA: the retrain relinks the root port
      * that also serves the iGPU), and on Intel X99/X299 boards the
-     * retrain pulse hung the boot entirely. Gen2 is OS-side only now:
-     * Windows BYOVD logon task, Linux cmp50hx-gen2.service / kernel
-     * patch 04. */
-    Print(L"[gen2] not attempted pre-OS — OS-side Gen2 only (issue #25)\n");
+     * retrain pulse hung the boot entirely. A 2026-09-17 opt-in retry
+     * (policy + LTSSM + TLS, no retrain pulse) proved the deeper wall:
+     * the XP3G privilege gate (BAR0 0x8e1b0) reads 0xffffff8f (closed)
+     * at the pre-OS stage and refuses writes there - it is opened by
+     * GSP-RM in the OS only. Gen2 needs: BIOS PCIe slot link speed =
+     * Gen2 (not Auto/Gen1; makes PL_LINK_RATE come up 0x00240032),
+     * kernel patch 04 + cmp50hx-gen2.service / the Windows logon task. */
+    Print(L"[gen2] not attempted pre-OS - OS-side Gen2 only (issue #25)\n");
 
 done:
     dump_regs(L"[v55 final]");
-    /* ---------- [10.5] opt-in pre-OS Gen2 capability unlock; reverts on
-     * any failed check — see u40x_gen2_try ---------- */
-    u40x_gen2_try(ImageHandle);
     /* ---------- [11] best-effort ReBAR (BAR1); reverts on any failed
      * check — see u40x_rebar_try ---------- */
     if (u40x_rebar32(ImageHandle)) {
