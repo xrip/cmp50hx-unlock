@@ -1,8 +1,11 @@
 package hxcore
 
 import (
+	"fmt"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // SetFb20gVar writes ("20G") or deletes the 50HXFB firmware variable — the
@@ -11,8 +14,28 @@ import (
 // this variable; Linux uses the plain efibootmgr -u "fb=20g" token.
 // "20G" forces 20 GiB geometry on modified 20 GB cards whose POST-latched
 // WPR2 mis-reports the size; no variable keeps the WPR2 heuristic.
-// Same kernel32 NewProc idiom as probe.go's SecureBootOn.
 func SetFb20gVar(on bool) error {
+	// An elevated admin token still carries SeSystemEnvironmentPrivilege
+	// DISABLED by default — without this explicit enable the variable
+	// write fails with "A required privilege is not held by the client"
+	// (issue #39, confirmed on a real host even when run as administrator).
+	var luid windows.LUID
+	if err := windows.LookupPrivilegeValue(nil,
+		windows.StringToUTF16Ptr("SeSystemEnvironmentPrivilege"), &luid); err != nil {
+		return fmt.Errorf("LookupPrivilegeValue: %w", err)
+	}
+	tok, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return err
+	}
+	defer tok.Close()
+	tp := windows.Tokenprivileges{PrivilegeCount: 1}
+	tp.Privileges[0].Luid = luid
+	tp.Privileges[0].Attributes = windows.SE_PRIVILEGE_ENABLED
+	if err := windows.AdjustTokenPrivileges(tok, false, &tp, 0, nil, nil); err != nil {
+		return fmt.Errorf("AdjustTokenPrivileges: %w", err)
+	}
+
 	k32 := syscall.NewLazyDLL("kernel32.dll")
 	pSet := k32.NewProc("SetFirmwareEnvironmentVariableExW")
 	var (

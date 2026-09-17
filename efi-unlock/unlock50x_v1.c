@@ -3640,14 +3640,13 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
  *      next entry without a POST. */
 
 static const CHAR16 *os_loader_paths[] = {
-    L"\\EFI\\proxmox\\shimx64.efi",
+    /* Windows first: every reporter so far boots Windows, and rung 1 already
+     * preloads bootmgfw from RAM — this is its SFS twin for when that
+     * preload comes up empty (#43/#44). Nobody needs the proxmox path. */
+    L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi",
     L"\\EFI\\ubuntu\\shimx64.efi",
     L"\\EFI\\ubuntu\\grubx64.efi",
     L"\\EFI\\systemd\\systemd-bootx64.efi",
-    /* rung-2 Windows handoff (#43): rung 1 preloads bootmgfw from RAM, but
-     * when that preload comes up empty the SFS ladder could never chainload
-     * Windows — the list had Linux loaders only */
-    L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi",
     L"\\EFI\\BOOT\\bootx64.efi",
 };
 
