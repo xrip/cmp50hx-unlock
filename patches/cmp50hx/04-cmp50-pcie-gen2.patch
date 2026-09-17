@@ -13,10 +13,23 @@ index b771a00..1a2b3c4 100644
  
  #include <sound/core.h>             /* HDA struct snd_card */
  
-@@ -1362,6 +1366,275 @@
+@@ -1362,6 +1366,295 @@
  #endif
  }
  
++/*
++ * The capability adoption is one-shot per power cycle: once the card has
++ * regenerated its PCIe config block, no later kick re-derives it. On a cold
++ * boot GSP reverts the policy at gsp-ready and the driver's kick a moment
++ * later fails - and spends the one shot, so the boot service cannot adopt
++ * either. Set this to 0 to leave the adoption to the boot service, which
++ * runs once the GSP traffic has settled.
++ */
++static unsigned int cmp50_gen2_adopt = 1;
++module_param(cmp50_gen2_adopt, uint, 0444);
++MODULE_PARM_DESC(cmp50_gen2_adopt,
++    "CMP 50HX: adopt the Gen2 capability from the driver (0=leave it to the boot service)");
++
 +static NvBool
 +nv_cmp50hx_is_supported(struct pci_dev *gpu)
 +{
@@ -100,6 +113,13 @@ index b771a00..1a2b3c4 100644
 +
 +    if (!nv_cmp50hx_is_supported(gpu))
 +        return;
++    if (cmp50_gen2_adopt == 0)
++    {
++        NV_DEV_PRINTF(NV_DBG_ERRORS, nv,
++                      "CMP50_GEN2: ADOPT_DEFERRED (cmp50_gen2_adopt=0); "
++                      "the boot service owns the one-shot adoption\n");
++        return;
++    }
 +
 +    upstream = pci_upstream_bridge(gpu);
 +    if (upstream == NULL)
@@ -289,7 +309,7 @@ index b771a00..1a2b3c4 100644
  /*
   * Brings up the device on the first file open. Assumes nvl->ldata_lock is held.
   */
-@@ -1521,6 +1794,8 @@
+@@ -1521,6 +1814,8 @@
          goto failed_release_irq;
      }
  
