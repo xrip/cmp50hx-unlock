@@ -4415,6 +4415,7 @@ static VOID
 u40x_gen2_try(EFI_HANDLE IH)
 {
     UINT32 plm, ovr0, val0, misc1, hier, cya0, cfg0, pl, cap, lc2;
+    BOOLEAN gateForced = FALSE;
 
     if (!u40x_gen2_enabled(IH))
         return;
@@ -4423,8 +4424,21 @@ u40x_gen2_try(EFI_HANDLE IH)
     Print(L"[gen2] XP3G_PLM=0x%08x CAP=0x%08x LC2=0x%08x\n",
           plm, mmio_read32(G2_LINK_CAP), mmio_read32(G2_LINK_CTRL2));
     if (plm != 0xFFFFFFFFU) {
-        Print(L"[gen2] privilege gate closed - skip\n");
-        return;
+        /* The gate is opened GSP-side ~5 s into OS boot; at the pre-OS stage
+         * it reads locked (0xffffff8f on 192.168.1.224). Try to force it
+         * open here - if the PLM is writable at our privilege level the rest
+         * can proceed, otherwise pre-OS Gen2 is simply not reachable. The
+         * original value is put back on any later failure. */
+        mmio_write32(G2_XP3G_PLM, 0xFFFFFFFFU);
+        (void)mmio_read32(G2_XP3G_PLM);
+        if (mmio_read32(G2_XP3G_PLM) != 0xFFFFFFFFU) {
+            Print(L"[gen2] privilege gate stuck closed (0x%08x) - skip\n",
+                  mmio_read32(G2_XP3G_PLM));
+            mmio_write32(G2_XP3G_PLM, plm);
+            return;
+        }
+        gateForced = TRUE;
+        Print(L"[gen2] forced the privilege gate open\n");
     }
 
     ovr0  = mmio_read32(G2_XP3G_OVR0);
@@ -4483,6 +4497,8 @@ revert:
     mmio_write32(G2_XP3G_VAL0, val0);
     mmio_write32(G2_XP3G_OVR0, ovr0);
     mmio_write32(G2_MISC1, misc1);
+    if (gateForced)
+        mmio_write32(G2_XP3G_PLM, plm);   /* close the gate we forced open */
     (void)mmio_read32(G2_MISC1);
 }
 
