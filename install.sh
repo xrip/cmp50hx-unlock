@@ -206,14 +206,18 @@ fi
 
 # --- 5. build the patched modules ------------------------------------------
 
-artifact_dir="${install_dir}/artifacts/${driver_version}-${krel}"
+# the patch set is part of the artifact identity: editing a patch must force
+# a rebuild instead of silently reusing modules built from the old sources
+patch_hash="$(cat "${install_dir}/patches/${card}"/*.patch | sha256sum | cut -c1-12)"
+artifact_dir="${install_dir}/artifacts/${driver_version}-${krel}-${patch_hash}"
 if [[ -f "${artifact_dir}/checksums.sha256" ]] \
         && (cd "${artifact_dir}" && sha256sum -c checksums.sha256 >/dev/null 2>&1); then
     log "reusing the previous build in ${artifact_dir}"
 else
     rm -rf "${artifact_dir}"
     log "building the patched ${card} modules for kernel ${krel} (this can take a while)"
-    (cd "${install_dir}" && KERNEL_RELEASE="${krel}" bash build.sh --card "${card}")
+    (cd "${install_dir}" && KERNEL_RELEASE="${krel}" \
+        CMP_UNLOCK_ARTIFACT_DIR="${artifact_dir}" bash build.sh --card "${card}")
 fi
 
 # --- 6. install the modules -------------------------------------------------
