@@ -10,7 +10,7 @@ index 82338b8..a848f9f 100644
  #include <linux/kernel.h>
  #include <linux/workqueue.h>
  
-@@ -337,6 +338,125 @@ static void nv_get_pci_sysfs_config
+@@ -337,6 +338,141 @@ static void nv_get_pci_sysfs_config
  #endif
  }
  
@@ -98,29 +98,45 @@ index 82338b8..a848f9f 100644
 +                     NV_CMP50_REBAR_CFG_SIZE_MASK))))
 +    {
 +        nv_printf(NV_DBG_ERRORS,
-+            "NVRM: CMP50_REBAR: XVE readback failed "
++            "NVRM: CMP50_REBAR: XVE readback failed, keeping the stock BAR1 "
 +            "old=%08x/%08x/%08x new=%08x/%08x/%08x\n",
 +            cya, cfg, cap, read_cya, read_cfg, read_cap);
 +        writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
 +        writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
 +        readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
 +        iounmap(xve);
-+        return -EIO;
++        return 0;
 +    }
 +
++    /*
++     * The card only advertises the sizes it can really take after the CYA
++     * unlock, and a 10 GB SKU stops at 16 GiB where a 20 GB mod goes to
++     * 32 GiB. Take the largest advertised size instead of failing the
++     * probe: a smaller BAR1 beats a GPU that does not come up at all.
++     */
 +    sizes = pci_rebar_get_possible_sizes(pci_dev, NV_GPU_BAR1);
 +    if (!(sizes & BIT(selector + 6)))
 +    {
++        unsigned int largest = sizes ? (unsigned int)(__fls(sizes) - 6) : 0;
++
 +        nv_printf(NV_DBG_ERRORS,
-+            "NVRM: CMP50_REBAR: size mask 0x%lx has no selector %u "
++            "NVRM: CMP50_REBAR: selector %u not in mask 0x%lx; using %u "
 +            "XVE=%08x/%08x/%08x->%08x/%08x/%08x\n",
-+            sizes, selector + 6, cya, cfg, cap,
++            selector, sizes, largest, cya, cfg, cap,
 +            read_cya, read_cfg, read_cap);
-+        writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
-+        writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
-+        readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
-+        iounmap(xve);
-+        return -EIO;
++        if ((largest == 0) || (largest > 9))
++        {
++            writel(cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++            writel(cya, xve + NV_CMP50_REBAR_CYA_OFFSET);
++            readl(xve + NV_CMP50_REBAR_CYA_OFFSET);
++            iounmap(xve);
++            return 0;
++        }
++        selector = largest;
++        new_cfg = (cfg & ~NV_CMP50_REBAR_CFG_SIZE_MASK) |
++                  NV_CMP50_REBAR_CFG_ENABLE | selector;
++        writel(new_cfg, xve + NV_CMP50_REBAR_CFG_OFFSET);
++        read_cfg = readl(xve + NV_CMP50_REBAR_CFG_OFFSET);
 +    }
 +
 +    NVreg_EnableResizableBar = 1;
@@ -136,7 +152,7 @@ index 82338b8..a848f9f 100644
  static int nv_resize_pcie_bars(struct pci_dev *pci_dev) {
  #if defined(NV_PCI_REBAR_GET_POSSIBLE_SIZES_PRESENT)
      u16 cmd;
-@@ -1992,6 +2112,12 @@ nv_pci_probe
+@@ -1992,6 +2128,12 @@ nv_pci_probe
          goto failed;
      }
  
@@ -149,7 +165,7 @@ index 82338b8..a848f9f 100644
      if ((pci_dev->irq == 0 && !pci_find_capability(pci_dev, PCI_CAP_ID_MSIX))
          && nv_treat_missing_irq_as_error())
      {
-@@ -2093,6 +2219,17 @@ nv_pci_probe
+@@ -2093,6 +2235,17 @@ nv_pci_probe
          goto err_zero_dev;
      }
  
