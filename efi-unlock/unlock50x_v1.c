@@ -3693,6 +3693,7 @@ static void collect_boot_order_paths(void)
     static UINT8 opt[1024];
     UINT16 order[64], current = 0xFFFF;
     UINTN sz = sizeof(current), i;
+    UINTN nVar = 0, nAct = 0;      /* per-skip counters for the #25 mystery */
     EFI_STATUS st;
 
     uefi_call_wrapper(RT->GetVariable, 5, L"BootCurrent", &gvGuid,
@@ -3713,9 +3714,11 @@ static void collect_boot_order_paths(void)
         if (EFI_ERROR(uefi_call_wrapper(RT->GetVariable, 5, name, &gvGuid,
                                         NULL, &osz, opt)))
             continue;
+        nVar++;
         if (osz < 8) continue;
         CopyMem(&attr, opt, 4);
         if (!(attr & 1)) continue;                  /* LOAD_OPTION_ACTIVE off */
+        nAct++;
         /* EFI_LOAD_OPTION: attributes, path list length, description, path */
         off = 6;
         while (off + 1 < osz && (opt[off] || opt[off + 1])) off += 2;
@@ -3738,9 +3741,12 @@ static void collect_boot_order_paths(void)
         }
     }
     /* #25 (X299/Debian): zero lines above although Debian boots from
-     * BootOrder — the next log must show which case this is. */
-    Print(L"[preload] BootOrder: %d entries, %d loader path(s) collected\n",
-          (INT32)(sz / sizeof(UINT16)), (INT32)g_bootPathCnt);
+     * BootOrder — one line that names the culprit: entries minus nVar =
+     * GetVariable failures (size?), nVar minus nAct = inactive entries,
+     * nAct minus collected = device path without a usable FILEPATH node. */
+    Print(L"[preload] BootOrder: %d entries, %d readable, %d active, %d loader path(s)\n",
+          (INT32)(sz / sizeof(UINT16)), (INT32)nVar, (INT32)nAct,
+          (INT32)g_bootPathCnt);
 }
 
 /* try every candidate loader on one FAT volume; the first hit is taken */
