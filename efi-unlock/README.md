@@ -114,12 +114,16 @@ Mine*, DOI 10.5281/zenodo.20916112):
 9. **Chainloads the OS with no POST in between** so the unlocked state
    survives into the OS. The loader is read into RAM *before* the unlock
    with an own FAT16/FAT32 parser over BlockIo, because SimpleFileSystem
-   calls hang on some AMI firmwares (#43/#47). Candidates, in order: the
-   file paths of the firmware's own `BootOrder` entries (so custom
-   installs boot what they always booted), then `bootmgfw.efi`, Ubuntu
-   shim, grub, systemd-boot, `\EFI\BOOT\bootx64.efi` — our own boot
-   volume first, never our own binary. Last resort: return to firmware
-   and let BDS continue BootOrder.
+   calls hang on whole firmware families (#43/#47, and #25: an X299 hung
+   on the very first SFS probe — the SFS fallback is gone entirely since
+   v1.1.20). Candidates, in order: the file paths of the firmware's own
+   `BootOrder` entries (the UEFI-spec mechanism for fixed disks), then
+   `bootmgfw.efi`, Debian/Ubuntu shim + grub, systemd-boot,
+   `\EFI\BOOT\bootx64.efi` (the spec's removable-media default) — our own
+   boot volume first, never our own binary. If every path misses, the ESP
+   is walked recursively and loaders are matched by file name, Windows
+   first then Linux (any distro, no hardcoded `\EFI\<distro>` needed).
+   Last resort: return to firmware and let BDS continue BootOrder.
 
 Differences from the 40HX v70 baseline: device `10de:1e09` only; chipId0
 `0x162000A1` (NV162, confirmed live via BOOT0); WPR meta fbSize 10 GB;

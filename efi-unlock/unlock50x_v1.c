@@ -17,10 +17,11 @@
  *   - step [8b] runs the manual FWSEC boot only when WPR2 is down after
  *     the GFW kill: on CMP 50HX the VBIOS POST already latched WPR2
  *     (live dmesg FWSEC_COMPLETE_GSP_UNTOUCHED / WPR=027fee00:027fe000);
- *   - chainload ladder targets Linux (Proxmox/Ubuntu shim/grub,
+ *   - chainload ladder targets Linux (Debian/Ubuntu shim/grub,
  *     systemd-boot, generic \EFI\BOOT) and Windows bootmgfw.efi, never
  *     chainloads itself, and falls back to returning to firmware
- *     (BDS continues BootOrder).
+ *     (BDS continues BootOrder). No SimpleFileSystem anywhere: OpenVolume
+ *     from a loaded app hard-hangs whole firmware families.
  *   - optional --return-to-grub load option skips that ladder and returns
  *     EFI_SUCCESS to the caller, allowing GRUB to chainload the OS next.
  *
@@ -3181,11 +3182,15 @@ build_wpr_meta(GspFwWprMeta *m, UINT64 elfPhys, UINT64 elfSize,
     m->flags = 0x1;                    /* GSP_FW_FLAGS_CLOCK_BOOST */
 }
 
-/* Loader ladder used by both handover stages (BlockIo preload and the SFS
- * fallback). Windows first: every reporter so far boots Windows. Paths the
- * firmware itself knows (BootOrder) are tried before this list. */
+/* Loader ladder for the BlockIo preload. Windows first: most reporters boot
+ * Windows; Debian next — a v1.1.19 reporter (issue #25, X299/Debian 12)
+ * hung because the ladder had Ubuntu but not Debian, and the preload fell
+ * through to the (removed) SFS fallback. Paths the firmware itself knows
+ * (BootOrder) are tried before this list. */
 static const CHAR16 *os_loader_paths[] = {
     L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi",
+    L"\\EFI\\debian\\shimx64.efi",
+    L"\\EFI\\debian\\grubx64.efi",
     L"\\EFI\\ubuntu\\shimx64.efi",
     L"\\EFI\\ubuntu\\grubx64.efi",
     L"\\EFI\\systemd\\systemd-bootx64.efi",
@@ -3335,11 +3340,14 @@ cmp90_fat_next(Cmp90Fat *f, UINT32 clus, UINT32 *next)
     return st;
 }
 
-/* поиск компонента пути в каталоге FAT32 (с поддержкой LFN).
- * dirClus — первый кластер каталога; имя сравнивается без регистра. */
+/* перечисление записей каталога: cb получает имя (LFN, иначе SFN), атрибут,
+ * первый кластер и размер; cb == FALSE — остановить обход. dirClus==0 —
+ * плоский корень FAT16. */
+typedef BOOLEAN (*cmp90_ent_cb)(Cmp90Fat *f, const CHAR16 *name, UINT8 attr,
+                                UINT32 firstClus, UINT64 size, VOID *ctx);
+
 static EFI_STATUS
-cmp90_fat_dir_find(Cmp90Fat *f, UINT32 dirClus,
-                   const CHAR16 *name, UINT32 *outClus, UINT64 *outSize)
+cmp90_fat_dir_enum(Cmp90Fat *f, UINT32 dirClus, cmp90_ent_cb cb, VOID *ctx)
 {
     UINT32 clus = dirClus;
     UINTN guard;
@@ -3365,7 +3373,7 @@ cmp90_fat_dir_find(Cmp90Fat *f, UINT32 dirClus,
             for (e = 0; e + 32 <= csz; e += 32) {
                 UINT8 *ent = buf + e;
                 UINT8 attr = ent[11];
-                if (ent[0] == 0x00) { cmp90_free(buf); return EFI_NOT_FOUND; }
+                if (ent[0] == 0x00) { cmp90_free(buf); return EFI_SUCCESS; }
                 if (ent[0] == 0xE5) { haveLfn = FALSE; continue; }
                 if (attr == 0x0F) {
                     /* LFN-фрагмент: seq N хранит символы (N-1)*13 .. N*13-1.
@@ -3391,45 +3399,89 @@ cmp90_fat_dir_find(Cmp90Fat *f, UINT32 dirClus,
                 }
                 /* обычная запись каталога */
                 {
-                    BOOLEAN match = FALSE;
-                    if (haveLfn && cmp90_eqi(lfn, name)) match = TRUE;
-                    if (!match && !(attr & 0x08)) {   /* 0x08 = метка тома */
-                        CHAR16 sfn[13]; UINTN si, sj = 0;
+                    CHAR16 nm[260]; BOOLEAN haveName = FALSE;
+                    if (haveLfn) {
+                        UINTN i;
+                        for (i = 0; i < 259 && lfn[i] && lfn[i] != 0xFFFF; i++)
+                            nm[i] = lfn[i];
+                        nm[i] = 0;
+                        haveName = TRUE;
+                    }
+                    if (!haveName && !(attr & 0x08)) {   /* 0x08 = метка тома */
+                        UINTN si, sj = 0;
                         for (si = 0; si < 8; si++) {
                             UINT8 c = ent[si];
                             if (c == ' ') break;
-                            sfn[sj++] = (CHAR16)c;
+                            nm[sj++] = (CHAR16)c;
                         }
                         if (ent[8] != ' ') {
-                            sfn[sj++] = L'.';
+                            nm[sj++] = L'.';
                             for (si = 8; si < 11; si++) {
                                 UINT8 c = ent[si];
                                 if (c == ' ') break;
-                                sfn[sj++] = (CHAR16)c;
+                                nm[sj++] = (CHAR16)c;
                             }
                         }
-                        sfn[sj] = 0;
-                        if (cmp90_eqi(sfn, name)) match = TRUE;
+                        nm[sj] = 0;
+                        haveName = TRUE;
                     }
                     haveLfn = FALSE;
-                    if (!match) continue;   /* v2.91: БЕЗ FreePool (был use-after-free) */
-                    *outClus = (UINT32)(ent[26] | (ent[27] << 8)) |
-                               ((UINT32)(ent[20] | (ent[21] << 8)) << 16);
-                    *outSize = ent[28] | (ent[29]<<8) | (ent[30]<<16) |
-                               ((UINT64)ent[31] << 24);
-                    cmp90_free(buf);
-                    return EFI_SUCCESS;
+                    if (!haveName) continue;   /* метка тома без LFN */
+                    if (!cb(f, nm, attr,
+                            (UINT32)(ent[26] | (ent[27] << 8)) |
+                            ((UINT32)(ent[20] | (ent[21] << 8)) << 16),
+                            ent[28] | (ent[29]<<8) | (ent[30]<<16) |
+                            ((UINT64)ent[31] << 24),
+                            ctx)) {
+                        cmp90_free(buf);
+                        return EFI_SUCCESS;    /* остановлено колбэком */
+                    }
                 }
             }
         }
         cmp90_free(buf);
-        if (!clus) return EFI_NOT_FOUND;        /* flat root: one pass only */
+        if (!clus) return EFI_SUCCESS;         /* flat root: one pass only */
         {
             EFI_STATUS st = cmp90_fat_next(f, clus, &clus);
             if (EFI_ERROR(st)) return st;
         }
     }
     return EFI_NOT_FOUND;
+}
+
+/* поиск компонента пути в каталоге (обёртка над перечислением);
+ * имя сравнивается без регистра */
+typedef struct {
+    const CHAR16 *name;
+    UINT32 clus;
+    UINT64 size;
+    BOOLEAN found;
+} Cmp90FindCtx;
+
+static BOOLEAN
+cmp90_find_cb(Cmp90Fat *f, const CHAR16 *name, UINT8 attr,
+              UINT32 firstClus, UINT64 size, VOID *p)
+{
+    Cmp90FindCtx *c = (Cmp90FindCtx *)p;
+    (void)f; (void)attr;
+    if (!cmp90_eqi(name, c->name)) return TRUE;
+    c->clus = firstClus;
+    c->size = size;
+    c->found = TRUE;
+    return FALSE;
+}
+
+static EFI_STATUS
+cmp90_fat_dir_find(Cmp90Fat *f, UINT32 dirClus,
+                   const CHAR16 *name, UINT32 *outClus, UINT64 *outSize)
+{
+    Cmp90FindCtx c = { name, 0, 0, FALSE };
+    EFI_STATUS st = cmp90_fat_dir_enum(f, dirClus, cmp90_find_cb, &c);
+    if (EFI_ERROR(st)) return st;
+    if (!c.found) return EFI_NOT_FOUND;
+    *outClus = c.clus;
+    *outSize = c.size;
+    return EFI_SUCCESS;
 }
 
 /* чтение файла целиком по кластерной цепочке */
@@ -3503,6 +3555,121 @@ cmp90_fat_load_path(Cmp90Fat *f, const CHAR16 *path,
     return EFI_SUCCESS;
 }
 
+/* ==== #25: рекурсивный поиск лоадера ПО ИМЕНИ файла ====
+ * When every BootOrder path and hardcoded path misses (a distro we did not
+ * list, an unusual ESP layout), walk the whole FAT tree and match by file
+ * name — Windows first, then Linux — instead of giving up (and, in older
+ * builds, falling into the removed SFS path that hangs some boards). */
+static const CHAR16 *scan_loader_names[] = {
+    L"bootmgfw.efi",             /* Windows Boot Manager */
+    L"shimx64.efi",              /* secure-boot Linux entry point */
+    L"grubx64.efi",
+    L"systemd-bootx64.efi",
+    L"bootx64.efi",              /* generic removable fallback */
+};
+#define SCAN_LOADER_CNT (sizeof(scan_loader_names)/sizeof(scan_loader_names[0]))
+#define SCAN_MAX_DEPTH 6
+#define SCAN_MAX_DIRS  2048
+
+typedef struct {
+    INT32 bestPrio;              /* -1 = ничего не найдено */
+    CHAR16 bestPath[160];
+    UINT32 bestClus;
+    UINT64 bestSize;
+    CHAR16 path[160];            /* текущая цепочка каталогов */
+    UINTN pathLen, depth, dirs;
+} Cmp90ScanCtx;
+
+static BOOLEAN
+cmp90_scan_cb(Cmp90Fat *f, const CHAR16 *name, UINT8 attr,
+              UINT32 firstClus, UINT64 size, VOID *p)
+{
+    Cmp90ScanCtx *c = (Cmp90ScanCtx *)p;
+    UINTN i, nlen = StrLen(name);
+
+    if (attr & 0x10) {           /* подкаталог — рекурсия */
+        if (name[0] == L'.' &&
+            (nlen == 1 || (nlen == 2 && name[1] == L'.')))
+            return TRUE;         /* ".", ".." */
+        if (c->depth >= SCAN_MAX_DEPTH || c->dirs >= SCAN_MAX_DIRS)
+            return TRUE;
+        if (c->pathLen + nlen + 2 >= sizeof(c->path)/sizeof(CHAR16))
+            return TRUE;         /* не влезает — пропускаем ветку */
+        c->path[c->pathLen++] = L'\\';
+        CopyMem(c->path + c->pathLen, name, nlen * sizeof(CHAR16));
+        c->pathLen += nlen;
+        c->path[c->pathLen] = 0;
+        c->depth++; c->dirs++;
+        cmp90_fat_dir_enum(f, firstClus, cmp90_scan_cb, c);
+        c->depth--;
+        c->pathLen -= nlen + 1;
+        c->path[c->pathLen] = 0;
+        return TRUE;
+    }
+
+    for (i = 0; i < SCAN_LOADER_CNT; i++)
+        if (cmp90_eqi(name, scan_loader_names[i])) break;
+    if (i == SCAN_LOADER_CNT) return TRUE;           /* не лоадер */
+    if (c->bestPrio >= 0 && (INT32)i >= c->bestPrio) return TRUE;
+    if (c->pathLen + nlen + 2 >= sizeof(c->bestPath)/sizeof(CHAR16))
+        return TRUE;
+    c->bestPrio = (INT32)i;                          /* новый лучший */
+    c->bestClus = firstClus;
+    c->bestSize = size;
+    CopyMem(c->bestPath, c->path, c->pathLen * sizeof(CHAR16));
+    c->bestPath[c->pathLen] = L'\\';
+    CopyMem(c->bestPath + c->pathLen + 1, name, nlen * sizeof(CHAR16));
+    c->bestPath[c->pathLen + 1 + nlen] = 0;
+    return TRUE;             /* идём дальше: может встретиться более приоритетный */
+}
+
+static BOOLEAN
+preload_scan_volume(EFI_HANDLE h, Cmp90Fat *f)
+{
+    Cmp90ScanCtx c;
+    UINT8 *buf;
+    CHAR16 *keep;
+    EFI_STATUS st;
+
+    SetMem(&c, sizeof(c), 0);
+    c.bestPrio = -1;
+    c.path[0] = L'\\';
+    c.pathLen = 1;
+
+    cmp90_fat_dir_enum(f, f->fat32 ? f->rootClus : 0, cmp90_scan_cb, &c);
+    if (c.bestPrio < 0) {
+        Print(L"[preload] scan: no known loader name on this volume\n");
+        return FALSE;
+    }
+    Print(L"[preload] scan: best candidate %s (priority %d)\n",
+          c.bestPath, (INT32)c.bestPrio);
+    if (c.bestSize == 0 || c.bestSize > 0x02000000ull) {
+        Print(L"[preload] scan: bad size %llu - skipped\n", c.bestSize);
+        return FALSE;
+    }
+    /* issue #36: our own binary deployed as \EFI\Boot\bootx64.efi */
+    if ((UINTN)c.bestSize == g_ourImageSize) {
+        Print(L"[preload] scan: %s is our own image - skipped\n", c.bestPath);
+        return FALSE;
+    }
+    buf = cmp90_alloc((UINTN)c.bestSize);
+    if (!buf) return FALSE;
+    st = cmp90_fat_read_file(f, c.bestClus, c.bestSize, buf);
+    if (EFI_ERROR(st) || !(buf[0] == 'M' && buf[1] == 'Z')) {
+        Print(L"[preload] scan: read/PE check failed (%r)\n", st);
+        cmp90_free(buf);
+        return FALSE;
+    }
+    keep = StrDuplicate(c.bestPath);
+    if (!keep) { cmp90_free(buf); return FALSE; }
+    g_bmBuf = buf;
+    g_bmSize = (UINTN)c.bestSize;
+    g_bmPath = keep;
+    g_bmDp = FileDevicePath(h, keep);
+    Print(L"[preload] OK %s, %d bytes in RAM (scan)\n", keep, (UINTN)c.bestSize);
+    return TRUE;
+}
+
 /* Candidate loaders the firmware itself boots: BootOrder -> Boot#### -> the
  * FILEPATH node of each entry. Read-only GetVariable calls, so none of the
  * NVRAM-write hangs seen on these boards apply. This is what lets custom
@@ -3570,6 +3737,10 @@ static void collect_boot_order_paths(void)
             dp = NextDevicePathNode(dp);
         }
     }
+    /* #25 (X299/Debian): zero lines above although Debian boots from
+     * BootOrder — the next log must show which case this is. */
+    Print(L"[preload] BootOrder: %d entries, %d loader path(s) collected\n",
+          (INT32)(sz / sizeof(UINT16)), (INT32)g_bootPathCnt);
 }
 
 /* try every candidate loader on one FAT volume; the first hit is taken */
@@ -3601,7 +3772,10 @@ static BOOLEAN preload_try_volume(EFI_HANDLE h, EFI_BLOCK_IO_PROTOCOL *bio,
         Print(L"[preload] OK %s, %d bytes in RAM\n", path, fsz);
         return TRUE;
     }
-    return FALSE;
+    /* FAT parsed fine but every path missed — walk the tree by file name
+     * (#25: Debian was missing from the ladder; the scan catches any distro) */
+    Print(L"[preload] ladder miss - scanning the volume by loader name...\n");
+    return preload_scan_volume(h, &f);
 }
 
 /* Walk every BlockIo volume — our own boot volume first, since that ESP
@@ -3690,8 +3864,6 @@ static void preload_os_loader(EFI_HANDLE ImageHandle)
         Print(L"[preload] no OS loader found on any volume\n");
 }
 
-static EFI_STATUS chainload_os(EFI_HANDLE ImageHandle);
-
 /* финальный старт: из ОЗУ (SourceBuffer), DevicePath = реальный ESP */
 /* EFI_DEVICE_PATH_PROTOCOL — for the "which volume am I on / booting from"
  * chainload diagnostics (issue #43/#47: identify the ESP in the log). */
@@ -3726,13 +3898,14 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
 
     /* ===== v2.99m: лестница загрузки ОС БЕЗ единого ресета =====
      * Тёплый ресет = POST = VBIOS переинициализирует GPU и анлок гибнет
-     * (подтверждено юзером на реальном HW 2026-08-23). Лестница:
-     *   1) StartImage bootmgfw из ОЗУ (preload до анлока)
-     *   2) любая ошибка -> SFS-цепочка с ESP
-     *      (\EFI\Microsoft\Boot\bootmgfw.efi через SimpleFileSystem)
-     *   3) и снова мимо -> BootNext->Windows + возврат из приложения:
-     *      BDS продолжит boot-order и загрузит Windows БЕЗ POST,
-     *      анлок сохраняется. */
+     * (подтверждено юзером на реальном HW 2026-08-23). Две ступени:
+     *   1) StartImage лоадера из ОЗУ (BlockIo-preload до анлока — ни
+     *      одного вызова SimpleFileSystem во всей программе)
+     *   2) мимо -> возврат из приложения: BDS продолжит boot-order и
+     *      сам стартует следующий пункт БЕЗ POST, анлок сохраняется.
+     *      SFS-ступени больше НЕТ: OpenVolume из загруженного приложения
+     *      наглухо вешает целые семейства прошивок (X570/X99-E WS AMI,
+     *      X299 — лог #25 обрывается на первом же SFS-пробе). */
 
     if (!g_bmBuf || !g_bmSize || !g_bmDp)
         Print(L"chainload-pre: preload empty\n");
@@ -3752,216 +3925,9 @@ static EFI_STATUS chainload_preloaded(EFI_HANDLE ImageHandle)
         }
     }
 
-    Print(L"chainload-pre: falling back to the SFS path\n");
-    st = chainload_os(ImageHandle);
-    if (!EFI_ERROR(st))
-        return EFI_SUCCESS;
-
     /* последняя ступень: возврат в прошивку. НИКАКОГО ResetSystem и
      * НИКАКОГО BootNext (NVRAM-записи на этой плате вешают систему). */
     Print(L"chainload-pre: returning to firmware (no POST)\n");
-    return EFI_NOT_FOUND;
-}
-
-
-/* ==== v1.50: Linux chainload ladder (replaces the Windows bootmgfw path) ====
- * The unlock must hand over to the OS without a single reset: a warm reset
- * runs POST, VBIOS re-initializes the GPU and the unlock dies (40HX project,
- * confirmed on real HW). Ladder order mirrors the proven v2.99m shape:
- *   1) LoadImage+StartImage of the OS boot manager via SimpleFileSystem
- *      (Ubuntu shim first, then grub, systemd-boot, generic \EFI\BOOT)
- *   2) any error -> return to firmware: BDS continues BootOrder to the
- *      next entry without a POST. */
-
-static BOOLEAN
-is_own_image(EFI_HANDLE ImageHandle, EFI_HANDLE FsHandle, const CHAR16 *Path)
-{
-    EFI_LOADED_IMAGE *li = NULL;
-    EFI_DEVICE_PATH *candDp = NULL;
-    CHAR16 *self = NULL, *cand = NULL;
-    UINTN sl, cl;
-    BOOLEAN same = FALSE;
-
-    if (uefi_call_wrapper(BS->HandleProtocol, 3, ImageHandle,
-                          &LoadedImageProtocol, (VOID**)&li) || !li)
-        return FALSE;
-    if (!li->DeviceHandle || li->DeviceHandle != FsHandle)
-        return FALSE;               /* different volume: cannot be us */
-    candDp = FileDevicePath(FsHandle, (CHAR16*)Path);
-    if (!candDp) return FALSE;
-    self = DevicePathToStr(li->FilePath);
-    cand = DevicePathToStr(candDp);
-    if (self && cand) {
-        sl = StrLen(self); cl = StrLen(cand);
-        if (sl >= cl &&
-            CompareMem(self + (sl - cl), cand, cl * sizeof(CHAR16)) == 0)
-            same = TRUE;
-    }
-    if (self) FreePool(self);
-    if (cand) FreePool(cand);
-    FreePool(candDp);
-    return same;
-}
-
-/* issue #36: when the Windows installer deploys 50HXUNLK.EFI to both
- * \EFI\50HX\50HXUNLK.EFI (BCD path) and \EFI\Boot\bootx64.efi (firmware
- * fallback path), the candidate path in the chainload ladder differs
- * from our loaded path — so the path-based is_own_image() above returns
- * false for bootx64.efi even though the candidate binary IS our binary,
- * and the chainload loads it, which means firmware starts our EFI again
- * (boot loop). Bail-out path-based check is therefore not enough.
- *
- * Content-side fallback: if our loaded binary and the candidate on the
- * same volume have the same FileSize, they are very likely the same
- * binary — the chance of a size collision with a real bootloader on
- * our ladder (shim ~1.5MB, grub ~150KB, systemd-boot ~150KB,
- * bootx64.efi ~1.6MB for our EFI) is negligible. Open the candidate,
- * read its EFI_FILE_INFO.FileSize, compare with g_ourImageSize. */
-static BOOLEAN
-candidate_is_our_binary(EFI_HANDLE FsHandle, const CHAR16 *Path)
-{
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Vol = NULL;
-    EFI_FILE_HANDLE Root = NULL, File = NULL;
-    EFI_FILE_INFO *Info = NULL;
-    UINTN InfoSize = 0;
-    UINT64 CandSize = 0;
-    BOOLEAN same_size = FALSE;
-    static EFI_GUID FileInfoGuid = EFI_FILE_INFO_ID;
-
-    if (g_ourImageSize == 0)
-        return FALSE;
-    if (EFI_ERROR(uefi_call_wrapper(BS->HandleProtocol, 3, FsHandle,
-            &gEfiSimpleFileSystemProtocolGuid, (VOID**)&Vol)) || !Vol)
-        return FALSE;
-    if (EFI_ERROR(Vol->OpenVolume(Vol, &Root)) || !Root)
-        return FALSE;
-    if (EFI_ERROR(Root->Open(Root, &File, (CHAR16*)Path,
-            EFI_FILE_MODE_READ, 0)) || !File) {
-        Root->Close(Root);
-        return FALSE;
-    }
-    /* GetInfo: first call returns the required buffer size in InfoSize. */
-    File->GetInfo(File, &FileInfoGuid, &InfoSize, NULL);
-    if (InfoSize == 0) goto out;
-    Info = (EFI_FILE_INFO *)AllocatePool(InfoSize);
-    if (!Info) goto out;
-    if (EFI_ERROR(File->GetInfo(File, &FileInfoGuid, &InfoSize, Info)))
-        goto out;
-    CandSize = Info->FileSize;
-    same_size = (CandSize == (UINT64)g_ourImageSize);
-
-out:
-    if (Info) FreePool(Info);
-    if (File) File->Close(File);
-    if (Root) Root->Close(Root);
-    return same_size;
-}
-
-/* True if candidate path's binary is the same as our loaded EFI binary.
- * Path-based check first (cheap); content-size check as a fallback for
- * the case where our binary was deployed to additional paths with
- * different filenames (issue #36 Windows installer: deploys our EFI
- * to \EFI\BOOT\bootx64.efi as a firmware fallback, in addition to
- * \EFI\50HX\50HXUNLK.EFI). */
-static BOOLEAN
-is_our_binary(EFI_HANDLE ImageHandle, EFI_HANDLE FsHandle, const CHAR16 *Path)
-{
-    if (is_own_image(ImageHandle, FsHandle, Path))
-        return TRUE;
-    return candidate_is_our_binary(FsHandle, Path);
-}
-
-static EFI_STATUS
-chainload_os_one(EFI_HANDLE ImageHandle, EFI_HANDLE FsHandle, const CHAR16 *Path)
-{
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FS = NULL;
-    EFI_FILE_PROTOCOL *Root = NULL, *File = NULL;
-    EFI_DEVICE_PATH *Dp = NULL;
-    EFI_HANDLE H = NULL;
-    EFI_STATUS Status;
-
-    Status = uefi_call_wrapper(BS->HandleProtocol, 3,
-        FsHandle, &gEfiSimpleFileSystemProtocolGuid, (VOID**)&FS);
-    if (EFI_ERROR(Status)) return Status;
-    Print(L"chainload: %s: OpenVolume...\n", Path);
-    Status = uefi_call_wrapper(FS->OpenVolume, 2, FS, &Root);
-    if (EFI_ERROR(Status)) return Status;
-    Status = uefi_call_wrapper(Root->Open, 5, Root, &File, (CHAR16*)Path, EFI_FILE_MODE_READ, 0);
-    if (!EFI_ERROR(Status)) uefi_call_wrapper(File->Close, 1, File);
-    uefi_call_wrapper(Root->Close, 1, Root);
-    if (EFI_ERROR(Status)) return Status;
-
-    Dp = FileDevicePath(FsHandle, (CHAR16*)Path);
-    if (!Dp) return EFI_OUT_OF_RESOURCES;
-    Status = uefi_call_wrapper(BS->LoadImage, 6,
-        FALSE, ImageHandle, Dp, NULL, 0, &H);
-    if (EFI_ERROR(Status)) {
-        Print(L"chainload: LoadImage %s: %r\n", Path, Status);
-        return Status;
-    }
-    Print(L"chainload: starting %s...\n", Path);
-    Status = uefi_call_wrapper(BS->StartImage, 3, H, NULL, NULL);
-    Print(L"chainload: StartImage returned: %r\n", Status);
-    return Status;
-}
-
-static EFI_STATUS
-chainload_os(EFI_HANDLE ImageHandle)
-{
-    EFI_HANDLE *Handles = NULL, self = NULL;
-    UINTN n = 0, i, p;
-    EFI_STATUS Status;
-    static EFI_GUID FsGuid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
-    EFI_LOADED_IMAGE *li = NULL;
-
-    if (!uefi_call_wrapper(BS->HandleProtocol, 3, ImageHandle,
-                           &LoadedImageProtocol, (VOID **)&li) && li)
-        self = li->DeviceHandle;
-
-    Print(L"chainload: enumerating SimpleFileSystem handles...\n");
-    Status = uefi_call_wrapper(BS->LocateHandleBuffer, 5,
-        ByProtocol, &FsGuid, NULL, &n, &Handles);
-    if (EFI_ERROR(Status)) {
-        Print(L"chainload: LocateHandleBuffer: %r\n", Status);
-        return Status;
-    }
-    Print(L"chainload: FS handles found: %d\n", n);
-    for (i = 0; i < n; i++) {
-        /* which device backs each FS handle (disk/partition of the ESP) -
-         * shows WHICH volume each boot attempt targets (issue #43/#47) */
-        EFI_DEVICE_PATH *dp = NULL;
-        if (!EFI_ERROR(uefi_call_wrapper(BS->HandleProtocol, 3,
-                Handles[i], &u40x_dp_guid, (VOID**)&dp)) && dp) {
-            CHAR16 *vol = DevicePathToStr(dp);
-            if (vol) {
-                Print(L"chainload: FS#%d = %s\n", (INT32)i, vol);
-                FreePool(vol);
-            }
-        }
-    }
-    /* our own volume first: it holds the loader on virtually every install,
-     * and probing unrelated volumes is exactly where SFS hangs (#43/#47) */
-    for (i = 0; i < n; i++)
-        if (Handles[i] == self) { Handles[i] = Handles[0]; Handles[0] = self; break; }
-
-    for (i = 0; i < n; i++)
-        for (p = 0; p < g_bootPathCnt + OS_LOADER_PATH_CNT; p++) {
-            const CHAR16 *path = (p < g_bootPathCnt)
-                               ? g_bootPaths[p]
-                               : os_loader_paths[p - g_bootPathCnt];
-            /* issue #47: on some AMI firmwares the SFS calls below hang —
-             * this marker is the last line printed before each risky step */
-            Print(L"chainload: FS#%d: probe %s...\n", (INT32)i, path);
-            if (is_our_binary(ImageHandle, Handles[i], path))
-                continue;       /* never chainload ourselves */
-            Status = chainload_os_one(ImageHandle, Handles[i], path);
-            if (!EFI_ERROR(Status)) {
-                if (Handles) FreePool(Handles);
-                return Status;
-            }
-        }
-    if (Handles) FreePool(Handles);
-    Print(L"chainload: OS loader not found\n");
     return EFI_NOT_FOUND;
 }
 
@@ -4831,7 +4797,7 @@ done:
     }
     /* v71fix: 黑屏很久+driver掉根因 = return firmware → BDS 重跑 POST →
      * GPU 重新initialize/unlock 丢失。改用黑盒式链载（chainload_preloaded：
-     * preload bootmgfw → LoadImage → StartImage → SFS fallback），
+     * preload loader → LoadImage → StartImage，мимо — возврат в BDS），
      * 不回firmware、无第二 POST，SS0 保持、driver正常。 */
     if (returnToGrub) {
         Print(L"[50HX] returning to GRUB; it may now start the OS loader\n");
