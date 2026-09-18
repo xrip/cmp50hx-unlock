@@ -1323,17 +1323,59 @@ func gen2Main() {
 		return
 	}
 	fmt.Printf("[Gen2] BAR0 check passed (BOOT_0=0x%08X, TU106)\n", boot0)
+	// v3.1.1: the XP3G privilege gate (BAR0+0x8E1B0) must read 0xFFFFFFFF before
+	// the policy writes — while it is closed, writes into the XP3G block
+	// (VAL0/OVR0) are dropped, which is the exact "XP3G_OVR0 read-back 0x00000000"
+	// of community #48. The Linux service (cmp50hx-gen2.sh) refuses to write
+	// until this gate opens. Bounded wait: a healthy driver has it open long
+	// before the logon task runs.
+	gate := uint32(0)
+	for i := 0; i < 40; i++ { // up to 10 s, 250 ms steps
+		if v, gerr := hxcore.TSRead(th, bar0Phys+0x8E1B0); gerr == nil {
+			gate = v
+			if v == 0xFFFFFFFF {
+				break
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if gate == 0xFFFFFFFF {
+		fmt.Println("[Gen2] XP3G PLM gate open (0x8E1B0=0xFFFFFFFF)")
+	} else {
+		fmt.Printf("[Gen2][!] XP3G PLM gate not open (0x8E1B0=0x%08X after 10s); XP3G writes will likely drop\n", gate)
+	}
 	gen2WritePL0(th, bar0Phys)
 
+	root := hxcore.FindRootPort(wh, gpuBus)
+	if root == 0xFFFFFFFF {
+		fmt.Println("[Gen2] root port not found, using GPU retrain fallback")
+	}
+	fmt.Printf("[Gen2] root port = 00:%02x.%x\n", (root>>3)&0x1F, root&7)
+
 	// The LTSSM kick is a one-shot capability adoption per power cycle: if
-	// LNKCAP still advertises Gen1 the adoption did not happen (the one-shot
-	// may already be consumed elsewhere) and the TLS/retrain steps below
-	// cannot succeed — say so instead of retrying blindly.
+	// LNKCAP still advertises Gen1 the adoption did not happen (the closed PLM
+	// gate or the driver/GSP rewriting the policy dropped it, or the one-shot
+	// was already consumed elsewhere).
 	if cap := hxcore.PcieCap(wh, gpuBDF); cap != 0 {
 		lc, _ := hxcore.PciRd(wh, gpuBDF, cap+0x0C)
 		if lc&0xF < 2 {
-			fmt.Printf("[Gen2][!] LNKCAP still Gen%d after the adoption kick (one-shot consumed this power cycle?); cold-boot (full power off) and retry\n", lc&0xF)
-			gen2StatusFail(fmt.Sprintf("LNKCAP still Gen%d after the adoption kick (one-shot consumed?); cold-boot and retry, then send the log", lc&0xF))
+			// v3.1.1: community #48 (AM5) — this used to return immediately,
+			// so '-hard' could never reach gen2HardFallback. On the 40HX the
+			// same situation (policy written but not holding, because the
+			// driver/GSP rewrites it within milliseconds) is exactly what
+			// Stage2 solves: a Root Link Disable re-asserts PL0+TLS while GSP
+			// cannot touch the link, and the re-enable trains up.
+			if hasArg("-hard") || gen2AutoHardEnabled() {
+				if hasArg("-hard") {
+					fmt.Println("[Gen2][!] adoption failed -> -hard explicitly triggers Link Disable fallback")
+				} else {
+					fmt.Println("[Gen2][!] adoption failed -> automatically running Link Disable fallback (Gen2AutoHard is enabled by default; see README to disable)")
+				}
+				gen2HardFallback(&th, &wh, gpuBDF, bar0Phys, root)
+				return
+			}
+			fmt.Printf("[Gen2][!] LNKCAP still Gen%d after the adoption kick (gate=0x%08X; one-shot consumed this power cycle?); cold-boot (full power off) and retry\n", lc&0xF, gate)
+			gen2StatusFail(fmt.Sprintf("LNKCAP still Gen%d after the adoption kick (PLM gate=0x%08X); cold-boot and retry, then send the log", lc&0xF, gate))
 			if !hasArg("-silent") {
 				gen2Notify("Gen2 capability adoption failed.\nCold-boot (full power off) and retry; if it persists, please send the log.")
 			}
@@ -1343,11 +1385,6 @@ func gen2Main() {
 	}
 
 	// 2. LNKCTL2 TLS=2 (GPU + root)
-	root := hxcore.FindRootPort(wh, gpuBus)
-	if root == 0xFFFFFFFF {
-		fmt.Println("[Gen2] root port not found, using GPU retrain fallback")
-	}
-	fmt.Printf("[Gen2] root port = 00:%02x.%x\n", (root>>3)&0x1F, root&7)
 	for _, b := range []struct {
 		bdf uint32
 		tag string
@@ -1510,7 +1547,7 @@ func residentGuard() {
 //   Retrain-ONLY (no second LD, to keep driver health) -> restart NVDisplay.ContainerLocalSystem.
 // The code layer cannot tell whether "current Gen1" is an idle downshift or a true failed train, so -hard is left to manual judgement.
 
-func gen2WritePL0(th syscall.Handle, bar0Phys uint64) {
+func gen2WritePL0(th syscall.Handle, bar0Phys uint64) bool {
 	// Proven sequence (Linux X79 host, 2026-09-13): the PCIe policy
 	// registers FIRST, then the one-shot XVE_LTSSM adoption kick LAST.
 	// The kick makes the card latch whatever policy is currently
@@ -1536,25 +1573,42 @@ func gen2WritePL0(th syscall.Handle, bar0Phys uint64) {
 		{0x8C040, 0x000C0000, 2 << 18, "LINK_CONFIG_0 MAX_RATE=2"},
 		{0x8C1C0, 0x00060000, 0x00040000, "PL_LINK_RATE GEN2"},
 	}
+	plOk := true
 	for _, p := range regs {
 		old, _ := hxcore.TSRead(th, bar0Phys+p.off)
 		nv := (old &^ p.clr) | p.val
 		if werr := hxcore.TSWrite(th, bar0Phys+p.off, nv); werr != nil {
 			fmt.Printf("  [!] %s write failed: %v\n", p.name, werr)
+			plOk = false
 			continue
 		}
-		if rb, rerr := hxcore.TSRead(th, bar0Phys+p.off); rerr != nil || (rb&p.clr) != p.val || (rb&^p.clr) != (old&^p.clr) {
+		// v3.1.1: correct field check — every set-bit present, every clear-bit
+		// absent. The old compare (rb&clr)!=val could never pass for
+		// PRIV_MISC_1 / VSEC_HIERARCHY (their set-bits live outside the
+		// clear-mask), so good writes printed "[warn]" — noise that hid the
+		// one real failure (XP3G_OVR0) in community logs.
+		rb, rerr := hxcore.TSRead(th, bar0Phys+p.off)
+		if rerr != nil || (rb&p.val) != p.val || (rb&p.clr) != 0 {
 			fmt.Printf("  [warn] %s read-back 0x%08x (was 0x%08x, wanted fields 0x%08x/0x%08x)\n", p.name, rb, old, p.val, p.clr)
+			plOk = false
 		} else {
 			fmt.Printf("  %s OK (0x%08X)\n", p.name, rb)
 		}
 	}
 	time.Sleep(50 * time.Millisecond)
 	// XVE_LTSSM kick — one-shot capability adoption (LNKCAP Gen1 -> Gen2).
-	fmt.Println("  XVE_LTSSM adoption kick (0x8872C=6)")
-	_ = hxcore.TSWrite(th, bar0Phys+0x8872C, 6)
-	_, _ = hxcore.TSRead(th, bar0Phys+0x8872C)
+	// v3.1.1: kick only when the policy verified; kicking with a dropped
+	// field would adopt the LOCKED set and burn the one-shot for the rest
+	// of the power cycle (see the sequence note above).
+	if plOk {
+		fmt.Println("  XVE_LTSSM adoption kick (0x8872C=6)")
+		_ = hxcore.TSWrite(th, bar0Phys+0x8872C, 6)
+		_, _ = hxcore.TSRead(th, bar0Phys+0x8872C)
+	} else {
+		fmt.Println("  [!] policy did not verify - LTSSM kick skipped (would adopt the locked set and burn the one-shot)")
+	}
 	time.Sleep(50 * time.Millisecond)
+	return plOk
 }
 
 // 16-bit LNKCTL2 TLS write (read-modify-write bits 3:0 only, preserve the rest)

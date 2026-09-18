@@ -11,7 +11,7 @@ const (
 	// Toolchain version — single source for every user-visible banner
 	// (inst50hx / check50x / uninstall50x). Bump on each release so stale
 	// installs are identifiable from logs; winres_gen keeps its own copy.
-	ToolVersion = "3.1.0"
+	ToolVersion = "3.1.1"
 
 	// 50HX PCI hardware ID (cannot be changed by a disguising driver — root
 	// of the v2.4.2 reverse-lookup).
