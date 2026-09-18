@@ -1573,6 +1573,13 @@ func gen2WritePL0(th syscall.Handle, bar0Phys uint64) bool {
 		{0x8C040, 0x000C0000, 2 << 18, "LINK_CONFIG_0 MAX_RATE=2"},
 		{0x8C1C0, 0x00060000, 0x00040000, "PL_LINK_RATE GEN2"},
 	}
+	// v3.1.2: reachability guard — with the link down (Root Link Disable,
+	// lost device) every BAR0 read returns 0xffffffff; writing then is pure
+	// noise (community #48 Stage2 log).
+	if b0, berr := hxcore.TSRead(th, bar0Phys+0x0); berr != nil || b0 == 0xFFFFFFFF {
+		fmt.Printf("  [!] BAR0 unreachable (BOOT_0=0x%08X) - policy write skipped\n", b0)
+		return false
+	}
 	plOk := true
 	for _, p := range regs {
 		old, _ := hxcore.TSRead(th, bar0Phys+p.off)
@@ -1582,14 +1589,14 @@ func gen2WritePL0(th syscall.Handle, bar0Phys uint64) bool {
 			plOk = false
 			continue
 		}
-		// v3.1.1: correct field check — every set-bit present, every clear-bit
-		// absent. The old compare (rb&clr)!=val could never pass for
-		// PRIV_MISC_1 / VSEC_HIERARCHY (their set-bits live outside the
-		// clear-mask), so good writes printed "[warn]" — noise that hid the
-		// one real failure (XP3G_OVR0) in community logs.
+		// v3.1.2: compare the whole field against the computed value. The
+		// v3.1.1 presence/absence check breaks on RMW fields whose set-bits
+		// overlap the clear-mask (LINK_CONFIG_0 bit19, PL_LINK_RATE bit18) —
+		// community #48 caught it flagging perfect read-backs as [warn].
+		mask := p.clr | p.val
 		rb, rerr := hxcore.TSRead(th, bar0Phys+p.off)
-		if rerr != nil || (rb&p.val) != p.val || (rb&p.clr) != 0 {
-			fmt.Printf("  [warn] %s read-back 0x%08x (was 0x%08x, wanted fields 0x%08x/0x%08x)\n", p.name, rb, old, p.val, p.clr)
+		if rerr != nil || (rb&mask) != (nv&mask) {
+			fmt.Printf("  [warn] %s read-back 0x%08x (was 0x%08x, wanted 0x%08x in mask 0x%08x)\n", p.name, rb, old, nv, mask)
 			plOk = false
 		} else {
 			fmt.Printf("  %s OK (0x%08X)\n", p.name, rb)
@@ -1662,14 +1669,17 @@ func gen2RootLinkDisable(th syscall.Handle, wh *syscall.Handle, gpuBDF uint32, b
 	}
 	ctl, _ := hxcore.PciRd(*wh, root, cap+0x10)
 	fmt.Printf("    ROOT Link Disable (ctl=0x%04X)\n", ctl&0xFFFF)
+	// v3.1.2: program the policy and both TLS targets while the link is still
+	// up — BAR0 and the GPU config space die with the link (#48 Stage2 log:
+	// every read 0xffffffff while disabled). The card re-adopts the
+	// programmed policy when the link retrains on the re-enable.
+	gen2WritePL0(th, bar0Phys)
+	gen2SetTLS(*wh, root, 2)
+	gen2SetTLS(*wh, gpuBDF, 2)
 	lo := uint16(ctl & 0xFFFF)
 	set := lo | 0x10 // bit4 = Link Disable
 	_ = hxcore.PciWr(*wh, root, cap+0x10, []byte{byte(set), byte(set >> 8)})
 	time.Sleep(500 * time.Millisecond)
-	// PL0 + TLS held while the link is down
-	gen2WritePL0(th, bar0Phys)
-	gen2SetTLS(*wh, root, 2)
-	gen2SetTLS(*wh, gpuBDF, 2)
 	// clear bit4 -> retrain
 	ctl2, _ := hxcore.PciRd(*wh, root, cap+0x10)
 	clr := uint16(ctl2&0xFFFF) &^ 0x10
@@ -1685,7 +1695,22 @@ func gen2PnpRecover40HX() bool {
 		`else { Write-Output 'PnP-NONE' }`
 	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput()
 	fmt.Printf("    PnP restore: %s (err=%v)\n", strings.TrimSpace(string(out)), err)
-	return err == nil && strings.Contains(string(out), "PnP-OK")
+	if err == nil && strings.Contains(string(out), "PnP-OK") {
+		return true
+	}
+	// v3.1.2: WMI Disable/Enable-PnpDevice fails with HRESULT 0x80041001 on a
+	// lost device (community #48) — fall back to pnputil (Win10 2004+), which
+	// drives the restart through the PnP manager instead of WMI.
+	ps2 := `$iid=(Get-PnpDevice -Class Display | Where-Object { $_.InstanceId -match 'DEV_1E09' } | Select-Object -First 1).InstanceId; if($iid){ Write-Output $iid }`
+	iidOut, ierr := exec.Command("powershell", "-NoProfile", "-Command", ps2).CombinedOutput()
+	iid := strings.TrimSpace(string(iidOut))
+	if ierr != nil || iid == "" {
+		fmt.Printf("    PnP pnputil fallback: no instance id (err=%v)\n", ierr)
+		return false
+	}
+	pnOut, pnErr := exec.Command("pnputil", "/restart-device", iid).CombinedOutput()
+	fmt.Printf("    PnP pnputil /restart-device: %s (err=%v)\n", strings.TrimSpace(string(pnOut)), pnErr)
+	return pnErr == nil
 }
 
 // Restart NVDisplay container (restore GPU-Z / Task Manager display, often needed after Link Disable)
@@ -1795,6 +1820,25 @@ func gen2HardFallback(th, wh *syscall.Handle, gpuBDF uint32, bar0Phys uint64, ro
 		// retrain-only (no second LD)
 		if bar0raw, _ := hxcore.PciRd(*wh, gpuBDF, 0x10); bar0raw != 0 && bar0raw != 0xFFFFFFFF {
 			bar0Phys = uint64(bar0raw & 0xFFFFFFF0)
+		}
+		// v3.1.2: the PnP restart re-initializes the GPU (GSP reboots) — the
+		// same boot window in which the Linux service catches the XP3G gate
+		// open; at the desktop it stays closed (#48: 0xFFFFFF8F for 10 s).
+		// Fast-poll and apply the policy the moment it opens, before the
+		// driver's own flow closes it again.
+		gate2 := uint32(0)
+		for i := 0; i < 200; i++ { // 10 s in 50 ms steps
+			if v, gerr := hxcore.TSRead(*th, bar0Phys+0x8E1B0); gerr == nil {
+				gate2 = v
+				if v == 0xFFFFFFFF {
+					fmt.Printf("[Gen2 -hard] XP3G PLM gate OPEN %d ms after the PnP restart - applying policy immediately\n", i*50)
+					break
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if gate2 != 0xFFFFFFFF {
+			fmt.Printf("[Gen2 -hard] XP3G PLM gate still 0x%08X after the PnP restart\n", gate2)
 		}
 		gen2WritePL0(*th, bar0Phys)
 		gen2SetTLS(*wh, root, 2)
