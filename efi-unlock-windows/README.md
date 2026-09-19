@@ -103,21 +103,24 @@ a fully unlocked 50HX should show ~13.5 TFLOP/s FP32, ~48 TIOP/s INT8 DP4A.
 
 ## PCIe Gen2 troubleshooting
 
-How the logon task works (v3.1.2): wait for `nvlddmkm` → wait for the XP3G
-privilege gate (`BAR0+0x8E1B0` = `0xFFFFFFFF`) → write the Gen2 policy set
-via BAR0 → fire the one-shot LTSSM adoption kick (`0x8872C=6`) → set
-LNKCTL2 TLS=2 on the GPU and the root port → alternate root/GPU retrains.
-If the link still does not train up, Stage 2 pre-programs the policy + TLS
-while the link is up, then does a Root Link Disable, restores the device
-via PnP (PowerShell, `pnputil` fallback) and fast-polls the XP3G gate
-around the restart — the reboot window where the Linux service catches it
-open.
+How the logon task works (v3.1.3): wait for `nvlddmkm` → wait for the XP3G
+privilege gate (`BAR0+0x8E1B0` = `0xFFFFFFFF`, only trusted once `BOOT_0`
+is a real value) → write the Gen2 policy set via BAR0 → fire the one-shot
+LTSSM adoption kick (`0x8872C=6`) → set LNKCTL2 TLS=2 on the GPU and the
+root port → alternate root/GPU retrains. If the link still does not train
+up, Stage 2 pre-programs the policy + TLS while the link is up, then does a
+Root Link Disable, restarts the device via PnP (WMI Disable/Enable with a
+`pnputil /restart-device` fallback) and — once the device is back — polls
+the XP3G gate through the re-init window, the reboot window where the Linux
+service catches it open.
 
 | Log line | Meaning | Action |
 |---|---|---|
 | `XP3G PLM gate not open (0x…)` | driver/GSP keeps the XP3G block closed; `XP3G_OVR0` writes drop (issue #48, AM5: `0xFFFFFF8F`) | let Stage 2 try (`-gen2 -hard`); if it still fails, cold-boot (full power off) and retry |
 | `policy did not verify - LTSSM kick skipped` | at least one field failed read-back (with a closed gate: the XP3G block); kicking now would adopt the locked set and burn the one-shot for this power cycle | nothing to fix client-side; the log tells us which field drops |
 | `BAR0 unreachable (BOOT_0=0xffffffff)` | the link is down / device lost — policy writes are skipped instead of hammering a dead BAR | expected inside Stage 2 while the link is disabled; elsewhere it means the device is lost |
+| `device did not come back after the PnP restart (still lost)` | the Root Link Disable dropped the card and neither WMI nor `pnputil` brought it back | this host cannot recover the link in software; use BIOS PCIe slot = Gen2 instead |
+| `device back but XP3G gate stayed closed` | the card re-initialized but the gate never opened even in the re-init window | on this host the gate does not open on Windows; adoption via the gate is not possible — BIOS slot = Gen2 is the path |
 | `LNKCAP still Gen1 after the adoption kick` | adoption failed — since v3.1.1 this runs Stage 2 (Link Disable + PnP) instead of returning early, with `-hard` or the default `Gen2AutoHard` | send the log if Stage 2 also fails |
 | GPU-Z / check shows Gen1 at idle | normal power-saving downshift | judge by the GPU's LNKCTL2 TLS target (`TLS=Gen2` = configured); under load the link returns to Gen2 |
 

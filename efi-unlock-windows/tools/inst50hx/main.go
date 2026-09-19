@@ -1687,27 +1687,40 @@ func gen2RootLinkDisable(th syscall.Handle, wh *syscall.Handle, gpuBDF uint32, b
 	time.Sleep(2000 * time.Millisecond)
 }
 
+// gen2GpuInstanceId returns the 50HX PnP InstanceId, or "" if not found.
+func gen2GpuInstanceId() string {
+	ps := `(Get-PnpDevice -Class Display | Where-Object { $_.InstanceId -match 'DEV_1E09' } | Select-Object -First 1).InstanceId`
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // PnP disable/enable 50HX - restores "GPU is lost" after Link Disable (nvidia-smi / GPU-Z disconnect)
 func gen2PnpRecover40HX() bool {
-	ps := `$iid=(Get-PnpDevice -Class Display | Where-Object { $_.InstanceId -match 'DEV_1E09' } | Select-Object -First 1).InstanceId; ` +
-		`if($iid){ Disable-PnpDevice -InstanceId $iid -Confirm:$false; Start-Sleep -Seconds 2; ` +
-		`Enable-PnpDevice -InstanceId $iid -Confirm:$false; Start-Sleep -Seconds 4; Write-Output "PnP-OK $iid" } ` +
-		`else { Write-Output 'PnP-NONE' }`
+	iid := gen2GpuInstanceId()
+	if iid == "" {
+		fmt.Println("    PnP restore: 50HX instance id not found")
+		return false
+	}
+	// 1. WMI Disable/Enable (the 40HX-proven path).
+	// v3.1.3: $ErrorActionPreference='Stop' + try/catch so a failed
+	// Disable/Enable exits non-zero instead of falsely printing PnP-OK.
+	// Community #48: Disable-PnpDevice returned non-terminating 0x80041001,
+	// the old script kept going and printed PnP-OK anyway, so the pnputil
+	// fallback below was never reached.
+	ps := `$ErrorActionPreference='Stop'; try { ` +
+		`Disable-PnpDevice -InstanceId '` + iid + `' -Confirm:$false; Start-Sleep -Seconds 2; ` +
+		`Enable-PnpDevice -InstanceId '` + iid + `' -Confirm:$false; Start-Sleep -Seconds 4; ` +
+		`Write-Output 'PnP-OK' } catch { Write-Output ('PnP-ERR ' + $_.Exception.Message); exit 1 }`
 	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput()
-	fmt.Printf("    PnP restore: %s (err=%v)\n", strings.TrimSpace(string(out)), err)
+	fmt.Printf("    PnP restore (WMI): %s (err=%v)\n", strings.TrimSpace(string(out)), err)
 	if err == nil && strings.Contains(string(out), "PnP-OK") {
 		return true
 	}
-	// v3.1.2: WMI Disable/Enable-PnpDevice fails with HRESULT 0x80041001 on a
-	// lost device (community #48) — fall back to pnputil (Win10 2004+), which
-	// drives the restart through the PnP manager instead of WMI.
-	ps2 := `$iid=(Get-PnpDevice -Class Display | Where-Object { $_.InstanceId -match 'DEV_1E09' } | Select-Object -First 1).InstanceId; if($iid){ Write-Output $iid }`
-	iidOut, ierr := exec.Command("powershell", "-NoProfile", "-Command", ps2).CombinedOutput()
-	iid := strings.TrimSpace(string(iidOut))
-	if ierr != nil || iid == "" {
-		fmt.Printf("    PnP pnputil fallback: no instance id (err=%v)\n", ierr)
-		return false
-	}
+	// 2. pnputil /restart-device — cfgmgr path, more robust than WMI on a
+	// lost device (Win10 2004+).
 	pnOut, pnErr := exec.Command("pnputil", "/restart-device", iid).CombinedOutput()
 	fmt.Printf("    PnP pnputil /restart-device: %s (err=%v)\n", strings.TrimSpace(string(pnOut)), pnErr)
 	return pnErr == nil
@@ -1821,24 +1834,33 @@ func gen2HardFallback(th, wh *syscall.Handle, gpuBDF uint32, bar0Phys uint64, ro
 		if bar0raw, _ := hxcore.PciRd(*wh, gpuBDF, 0x10); bar0raw != 0 && bar0raw != 0xFFFFFFFF {
 			bar0Phys = uint64(bar0raw & 0xFFFFFFF0)
 		}
-		// v3.1.2: the PnP restart re-initializes the GPU (GSP reboots) — the
-		// same boot window in which the Linux service catches the XP3G gate
+		// v3.1.2/v3.1.3: the PnP restart re-initializes the GPU (GSP reboots) —
+		// the same boot window in which the Linux service catches the XP3G gate
 		// open; at the desktop it stays closed (#48: 0xFFFFFF8F for 10 s).
-		// Fast-poll and apply the policy the moment it opens, before the
-		// driver's own flow closes it again.
-		gate2 := uint32(0)
+		// Wait for the device to come back (BOOT_0 real) THEN check the gate:
+		// a lost device reads 0xFFFFFFFF at every BAR0 offset, so 0x8E1B0
+		// alone is ambiguous (#48 v3.1.2 log: false "gate OPEN 0 ms" while
+		// BOOT_0 was 0xFFFFFFFF). Apply the policy the moment the gate opens.
+		gateOpen, devBack := false, false
 		for i := 0; i < 200; i++ { // 10 s in 50 ms steps
-			if v, gerr := hxcore.TSRead(*th, bar0Phys+0x8E1B0); gerr == nil {
-				gate2 = v
-				if v == 0xFFFFFFFF {
-					fmt.Printf("[Gen2 -hard] XP3G PLM gate OPEN %d ms after the PnP restart - applying policy immediately\n", i*50)
+			b0, berr := hxcore.TSRead(*th, bar0Phys+0x0)
+			if berr == nil && (b0&0xFF000000) == 0x16000000 {
+				if !devBack {
+					devBack = true
+					fmt.Printf("[Gen2 -hard] device back (BOOT_0=0x%08X) %d ms after the restart\n", b0, i*50)
+				}
+				if plm, perr := hxcore.TSRead(*th, bar0Phys+0x8E1B0); perr == nil && plm == 0xFFFFFFFF {
+					fmt.Printf("[Gen2 -hard] XP3G PLM gate OPEN %d ms after the restart - applying policy immediately\n", i*50)
+					gateOpen = true
 					break
 				}
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
-		if gate2 != 0xFFFFFFFF {
-			fmt.Printf("[Gen2 -hard] XP3G PLM gate still 0x%08X after the PnP restart\n", gate2)
+		if !devBack {
+			fmt.Println("[Gen2 -hard][!] device did not come back after the PnP restart (still lost); policy re-apply will no-op")
+		} else if !gateOpen {
+			fmt.Println("[Gen2 -hard] device back but XP3G gate stayed closed through the re-init window")
 		}
 		gen2WritePL0(*th, bar0Phys)
 		gen2SetTLS(*wh, root, 2)
