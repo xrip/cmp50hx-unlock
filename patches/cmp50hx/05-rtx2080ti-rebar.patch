@@ -1,0 +1,101 @@
+diff --git a/kernel-open/nvidia/nv-pci.c b/kernel-open/nvidia/nv-pci.c
+--- a/kernel-open/nvidia/nv-pci.c
++++ b/kernel-open/nvidia/nv-pci.c
+@@ -340,3 +340,90 @@
++/*
++ * TU102 (GeForce RTX 2080 Ti, PCI 1e04/1e07): BAR1 size is selected by the
++ * "PSTRAPS" override in BAR0.  STRAPS1 bits[22:20] hold the size code
++ *     code = log2(size_MiB) - 6     ( 8 = 16 GiB, 9 = 32 GiB )
++ * and bit 31 of STRAPS0/STRAPS1 arms the override.  Verified by hand on a
++ * 1e04: STRAPS0=0x80400080, STRAPS1=0x82713000 -> BAR1 = 32 GiB.
++ *
++ * Fail-soft: never aborts probe.  Arms the straps and lets the stock
++ * resizable-BAR path assign the larger window.
++ */
++#define NV_TU102_STRAPS0_OFF       0x00101000U
++#define NV_TU102_STRAPS1_OFF       0x0010100CU
++#define NV_TU102_STRAPS_OVERRIDE   0x80000000U
++#define NV_TU102_STRAPS1_SIZE_MASK 0x00700000U
++
++static unsigned int tu102_bar1_size = 9;
++module_param(tu102_bar1_size, uint, 0444);
++MODULE_PARM_DESC(tu102_bar1_size,
++    "TU102 BAR1 size code (log2(size_MiB)-6; 8=16GiB, 9=32GiB)");
++
++static int nv_tu102_set_bar1_size(struct pci_dev *pci_dev, u8 regs_bar_index)
++{
++    u8 __iomem *p;
++    u32 s0, s1, n0, n1;
++    unsigned int idx = tu102_bar1_size;
++
++    if ((pci_dev->vendor != PCI_VENDOR_ID_NVIDIA) ||
++        ((pci_dev->device != 0x1e04) && (pci_dev->device != 0x1e07)))
++    {
++        return 0;
++    }
++
++    if ((idx < 7) || (idx > 9))
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: TU102_REBAR: unsupported size code %u\n", idx);
++        return 0;
++    }
++
++    if (!(pci_resource_flags(pci_dev, regs_bar_index) & IORESOURCE_MEM) ||
++        (pci_resource_len(pci_dev, regs_bar_index) <
++         (NV_TU102_STRAPS1_OFF + 4U)))
++    {
++        return 0;
++    }
++
++    p = ioremap(pci_resource_start(pci_dev, regs_bar_index) +
++                NV_TU102_STRAPS0_OFF, 0x1000U);
++    if (p == NULL)
++    {
++        nv_printf(NV_DBG_ERRORS, "NVRM: TU102_REBAR: ioremap failed\n");
++        return 0;
++    }
++
++    s0 = readl(p + 0x00);
++    s1 = readl(p + 0x0C);
++
++    /* STRAPS0: arm the override; bits[15:14] are left as read (0 on 1e04) */
++    n0 = s0 | NV_TU102_STRAPS_OVERRIDE;
++    /* STRAPS1: bits[22:20] = size code (16 GiB -> 6, 32 GiB -> 7) + override */
++    n1 = (s1 & ~NV_TU102_STRAPS1_SIZE_MASK) |
++         ((((u32)(idx - 2)) << 20) & NV_TU102_STRAPS1_SIZE_MASK) |
++         NV_TU102_STRAPS_OVERRIDE;
++
++    writel(n0, p + 0x00);
++    writel(n1, p + 0x0C);
++    (void)readl(p + 0x00);
++
++    if ((readl(p + 0x00) != n0) || (readl(p + 0x0C) != n1))
++    {
++        nv_printf(NV_DBG_ERRORS,
++            "NVRM: TU102_REBAR: readback failed, rollback\n");
++        writel(s0, p + 0x00);
++        writel(s1, p + 0x0C);
++        (void)readl(p + 0x00);
++        iounmap(p);
++        return 0;
++    }
++
++    NVreg_EnableResizableBar = 1;
++    nv_printf(NV_DBG_ERRORS,
++        "NVRM: TU102_REBAR: straps %08x/%08x -> %08x/%08x (size code %u)\n",
++        s0, s1, n0, n1, idx);
++    iounmap(p);
++    return 0;
++}
++
+ static int nv_resize_pcie_bars(struct pci_dev *pci_dev) {
+ #if defined(NV_PCI_REBAR_GET_POSSIBLE_SIZES_PRESENT)
+     u16 cmd;
+@@ -2091,3 +2178,6 @@
++    /* TU102 (RTX 2080 Ti): arm large-BAR1 straps (fail-soft) */
++    (void)nv_tu102_set_bar1_size(pci_dev, regs_bar_index);
++
+     if (nv_resize_pcie_bars(pci_dev)) {
+         nv_printf(NV_DBG_ERRORS, "NVRM: Fatal Error while attempting to resize PCIe BARs.\n");
+         goto err_zero_dev;

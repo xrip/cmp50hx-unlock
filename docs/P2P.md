@@ -5,6 +5,16 @@ RTX 2080 Ti and 3× CMP 50HX on Proxmox 7.0.14, driver 610.43.03 built
 from open-gpu-kernel-modules with the cmp50hx-unlock patches plus the
 aikitoria P2P patch applied on top.
 
+The local build now applies the same P2P path for 610.43.03. It includes
+the TU102 BAR1 sizing patch for an RTX 2080 Ti peer, the aikitoria P2P
+patch, and the Turing BAR1 P2P fixes from issue #14. The CMP 50HX BAR1
+size stays controlled by cmp50_rebar_size: selector 8 gives 16 GiB and
+selector 9 gives 32 GiB when the card supports it. The RTX 2080 Ti
+patch sets tu102_bar1_size to 9 by default.
+
+The upstream issue report is hardware-verified. This repository's patch
+integration has not been tested on local hardware.
+
 Kernel command line used:
 
 ```

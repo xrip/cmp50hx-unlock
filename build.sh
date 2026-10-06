@@ -63,11 +63,15 @@ case "${card}" in
         # the idle governor instead, which reaches about 2 W idle and restores
         # full clocks on release. Evidence:
         # experiments/cmp50-pstate-20260824/runs/20260826T092500Z-patch05-ab-cold-boot/
+        # Issue #14 P2P stack follows the CMP ReBAR and PCIe setup.
         patch_order=(
             01-cmp50-stockflow.patch
             02-cmp50-rt-core-count.patch
             03-cmp50-rebar.patch
             04-cmp50-pcie-gen2.patch
+            05-rtx2080ti-rebar.patch
+            06-aikitoria-p2p.patch
+            07-turing-p2p.patch
         )
         ;;
     *)
