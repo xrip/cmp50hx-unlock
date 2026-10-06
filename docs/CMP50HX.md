@@ -1909,6 +1909,20 @@ Because the alias changed no useful result, its code and module parameter were
 removed from the all-feature package. The negative evidence remains in
 `experiments/cmp50-pci-id-alias` so this path is not repeated.
 
+### Driver-side CUDA profiling gate
+
+Patch `08-cmp50-driver-profiling.patch` clears `isCmpSku` in the chip-info copy
+used by CPU-RM, after it receives the data from physical RM. It is limited to
+the tested CMP 50HX PCI and subsystem IDs (`10de:1e09`, `10de:1554`, and
+`1462:371f`). This keeps the PCI identity intact and does not change GPU fuses
+or SM counts. The goal is to let stock CUDA profiling tools pass the CMP check
+through the driver.
+
+This path is not yet built or live-checked. It must show CUDA kernel and SM
+counter data in stock profiler tools before we can call the driver path working.
+The existing private-library path below remains the proven route for its named
+tool versions.
+
 ### CUPTI and Nsight user-space unlocks
 
 CUDA 12.0.146 `libcupti.so.12` creates a per-device state and asks the private
@@ -1975,6 +1989,7 @@ wrappers check the patched hashes. System files stay unchanged.
 | Display | Display fuse and missing board output path are separate | Fuse read, engine list, board check |
 | NVENC/NVDEC | May be fused off | Fuse read, engine list, encode/decode test |
 | CUPTI/Nsight | Working for nvprof 12.0.146, Nsight Compute 2022.4.1, and Nsight Systems 2022.4.2 with private, hash-gated copies; real API, kernel, and SM-counter records captured | Keep system files unchanged and add separate guarded patterns for newer builds |
+| Driver profiler gate | Patch 08 clears the CPU-RM CMP flag for the supported CMP 50HX IDs | Not yet built or live-checked with stock tools; capture CUDA kernel and SM-counter data |
 | Secure firmware path | Stockflow is locally working; direct code replacement is still signed/blocked | Exact FECS/GPCCS image and context trace |
 
 ## Next realistic unlock candidates

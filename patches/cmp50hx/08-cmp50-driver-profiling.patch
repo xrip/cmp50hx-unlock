@@ -1,0 +1,15 @@
+diff --git a/src/nvidia/src/kernel/gpu/gpu.c b/src/nvidia/src/kernel/gpu/gpu.c
+--- a/src/nvidia/src/kernel/gpu/gpu.c
++++ b/src/nvidia/src/kernel/gpu/gpu.c
+@@ -838,4 +838,11 @@ _gpuInitChipInfo
+     pGpu->chipInfo.subRevision  = pGpu->pChipInfo->chipSubRev;
+     pGpu->idInfo.PCIDeviceID    = pGpu->pChipInfo->pciDeviceId;
+     pGpu->idInfo.PCISubDeviceID = pGpu->pChipInfo->pciSubDeviceId;
+     pGpu->idInfo.PCIRevisionID  = pGpu->pChipInfo->pciRevisionId;
++
++    if ((pGpu->idInfo.PCIDeviceID == 0x1E0910DEU) &&
++        ((pGpu->idInfo.PCISubDeviceID == 0x155410DEU) ||
++         (pGpu->idInfo.PCISubDeviceID == 0x371F1462U)))
++    {
++        pGpu->pChipInfo->isCmpSku = NV_FALSE;
++    }

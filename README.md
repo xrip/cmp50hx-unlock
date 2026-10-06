@@ -3,7 +3,8 @@
 # CMP 50HX 610.43.03 unlock guide
 
 This repo builds and installs patched NVIDIA `610.43.03` open kernel modules
-for the CMP 50HX (TU102). The patches are developed and proven here.
+for the CMP 50HX (TU102). This guide records each patch and its validation
+status.
 
 ## One-click install
 
@@ -66,7 +67,7 @@ ReBAR, Gen2, and the RT-count override remain kernel patches (see the
 feature table in the directory README). Install guide, prerequisites,
 verification, and rollback: [`efi-unlock/README.md`](efi-unlock/README.md).
 
-The rest of this file is the working record for the five CMP50HX patches in
+The rest of this file is the working record for the CMP50HX patches in
 `patches/cmp50hx/`. It explains the code path, the reason for each change, the
 checks that support it, and the limits of the proof. The series is for the
 official NVIDIA `610.43.03` open-module source and for the tested CMP50HX PCI
@@ -81,6 +82,18 @@ identity:
 The packed values are used by RM/GSP code. The Linux module uses the split
 vendor, device, and subsystem fields. The two forms must not be mixed when a
 new patch is made.
+
+## CUDA kernel profiling
+
+The driver build series includes `08-cmp50-driver-profiling.patch`. For the
+supported CMP 50HX PCI and subsystem IDs, it clears `isCmpSku` in the chip-info
+copy used by CPU-RM. This is meant to let unmodified CUDA profilers read kernel
+and SM metrics from workloads such as LLM inference.
+
+This driver path is not yet built or live-tested. It does not change PCI IDs or
+unlock SMs. The existing private CUPTI and Nsight copies remain validated for
+the tool versions listed in the
+[profiling audit](docs/CMP50HX.md#driver-side-cuda-profiling-gate).
 
 ## CMP 50HX 20 GB support
 

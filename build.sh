@@ -72,6 +72,7 @@ case "${card}" in
             05-rtx2080ti-rebar.patch
             06-aikitoria-p2p.patch
             07-turing-p2p.patch
+            08-cmp50-driver-profiling.patch
         )
         ;;
     *)
