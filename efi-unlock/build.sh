@@ -6,7 +6,7 @@
 #
 # Output: 50HXUNLK.EFI — deploy to the ESP as \EFI\50HX\50HXUNLK.EFI and put
 # a "50HX Unlock" boot entry first in BootOrder (see README.md).
-set -e
+set -euo pipefail
 cd "$(dirname "$0")"
 
 EFI_INC="${EFI_INC:-/usr/include/efi}"
@@ -28,7 +28,7 @@ gcc -c -O2 -fno-stack-protector -fpic -ffreestanding \
     -fshort-wchar -mno-red-zone -maccumulate-outgoing-args \
     -fno-builtin -fno-strict-aliasing -Wno-unused-function \
     -I "$EFI_INC" -I "$EFI_INC/x86_64" \
-    -DDIRECT_SEC2 -DRELEASE_BUILD -DVBIOS_DUMP \
+    -DGNU_EFI_USE_MS_ABI -DDIRECT_SEC2 -DRELEASE_BUILD -DVBIOS_DUMP \
     -o "$OBJ" "$SRC"
 
 echo "=== 2. embed blobs ==="
@@ -79,7 +79,7 @@ if [ ! -f "$OUT" ]; then
 fi
 
 echo "=== 4. convert ==="
-objcopy -j .text -j .sdata -j .data -j .dynamic -j .dynsym \
+objcopy -j .text -j .sdata -j .data -j .rodata -j .dynamic -j .dynsym \
     -j .reloc -j .rel -j .rela -j .rel.* -j .rela.* \
-    --target=efi-app-x86_64 "$OUT" "$EFIOUT" 2>&1 | tail -4 || true
+    --target=efi-app-x86_64 "$OUT" "$EFIOUT" 2>&1 | tail -4
 ls -la "$EFIOUT" && sha256sum "$EFIOUT" && echo BUILD_OK
