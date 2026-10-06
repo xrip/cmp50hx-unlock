@@ -115,6 +115,17 @@ completion and is not host-reachable — the enable sits behind a readiness
 barrier inside signed GSP-RM — so the optional idle governor below is the
 idle-power solution.
 
+## Linux P2P support
+
+The Linux kernel-module build includes P2P support for CMP 50HX cards and a
+BAR1 patch for RTX 2080 Ti peers. On Ubuntu 24.04.4 with kernel
+6.8.0-139-generic and two 20 GiB CMP 50HX cards, `nvidia-smi topo -p2p r`
+and `nvidia-smi topo -p2p w` both report `OK` between the cards. Each card
+used a 32 GiB BAR1 (`cmp50_rebar_size=9`).
+
+This confirms the driver's P2P capability report; no CUDA peer-transfer
+benchmark was run. See [`docs/P2P.md`](docs/P2P.md) for setup and limits.
+
 ## Quick install (Ubuntu/Debian)
 
 On a fresh Ubuntu or Debian system with a CMP 50HX (`10de:1e09`) installed:
