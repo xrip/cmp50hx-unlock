@@ -260,7 +260,8 @@ extern EFI_SYSTEM_TABLE *ST;
 extern EFI_BOOT_SERVICES *BS;
 EFI_HANDLE ImageHandle = NULL; /* crt0 global - provided by ourselves */
 
-EFI_STATUS EFIAPI efi_main(EFI_HANDLE, EFI_SYSTEM_TABLE *);
+/* gnu-efi crt0/_entry calls efi_main using the native SysV ABI. */
+EFI_STATUS efi_main(EFI_HANDLE, EFI_SYSTEM_TABLE *);
 
 EFI_STATUS EFIAPI
 u40x_entry(EFI_HANDLE ImageHandle_, EFI_SYSTEM_TABLE *SystemTable_)
@@ -4487,7 +4488,7 @@ u40x_rebar_try(UINT64 want, UINT32 selector)
 }
 
 /* ===== v55 主entry（DIRECT_SEC2，40HX） ===== */
-EFI_STATUS EFIAPI
+EFI_STATUS
 efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     EFI_STATUS Status = EFI_SUCCESS;
