@@ -608,8 +608,8 @@ static void print_help(const char *program) {
 }
 
 int main(int argc, char **argv) {
-    NvmlApi nvml;
-    Nvapi nvapi;
+    NvmlApi nvml = {0};
+    Nvapi nvapi = {0};
     Config config;
     Gpu gpus[MAX_GPUS];
     unsigned int gpu_count;
