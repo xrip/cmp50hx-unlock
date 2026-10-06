@@ -177,6 +177,9 @@ func selfElevate() {
 	// Append the -elevated marker: if the new instance is still not admin, do not re-elevate (prevents infinite loop)
 	args := append([]string{}, os.Args[1:]...)
 	args = append(args, "-elevated")
+	for i, arg := range args {
+		args[i] = syscall.EscapeArg(arg)
+	}
 	params, _ := syscall.UTF16PtrFromString(strings.Join(args, " "))
 	r, _, _ := procShellExecuteW.Call(0,
 		uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)),
@@ -303,6 +306,7 @@ func printHelp() {
 	fmt.Println("CMP 50HX Windows one-click unlock installer")
 	fmt.Println("  Usage: 50HXInstaller.exe            # install (requires admin)")
 	fmt.Println("         50HXInstaller.exe -gen2      # run Gen2 unlock now")
+	fmt.Println("         50HXInstaller.exe -efi FILE  # install a signed EFI image")
 	fmt.Println("         50HXInstaller.exe -uninstall # uninstall")
 	fmt.Println("         50HXInstaller.exe -status    # print status")
 }
@@ -423,18 +427,14 @@ func copyEmbedTo(target string, src string) error {
 //
 // Returns whether the fallback path freshly backed up the original file.
 func deployEspEfi(esp string) (backedUp bool, err error) {
-	// Read embed once; both paths share it
-	data, rerr := embedded.ReadFile("embed/50HXUNLK.EFI")
+	data, source, signed, rerr := loadEFIImage()
 	if rerr != nil {
 		return false, rerr
 	}
-	// Verify the embed data itself before writing (PE header + reasonable length, defend against embed corruption)
-	if len(data) < 0x2000 { // an EFI file smaller than 8 KB is definitely corrupt
-		return false, fmt.Errorf("embedded 50HXUNLK.EFI data is invalid (%d bytes)", len(data))
+	if hxcore.SecureBootOn() && !signed {
+		return false, errors.New("Secure Boot is enabled but the selected EFI is unsigned; sign it with a key trusted in firmware db")
 	}
-	if !bytes.HasPrefix(data, []byte("MZ")) {
-		return false, errors.New("embedded 50HXUNLK.EFI is not a valid PE image (missing MZ header)")
-	}
+	fmt.Printf("    EFI image: %s (signature present: %v)\n", source, signed)
 
 	// A. Primary path
 	dirA := esp + ":" + efiDir // Y:\EFI\40HX
@@ -699,7 +699,7 @@ func installEFI() bool {
 		msgbox("50HX Installer (IMPORTANT: please follow the steps)",
 			"The auto-created boot entry was not accepted by the firmware.\n"+
 				"Please reboot and press Del/F2 to enter the BIOS; complete the following (otherwise the unlock will not happen):\n\n"+
-				"1. Disable Secure Boot (if it is on, unsigned EFI is rejected)\n"+
+				"1. If Secure Boot is on, use an EFI signed by a key enrolled in firmware db (see README)\n"+
 				"2. Disable Fast Boot / quick boot if present\n"+
 				"3. In [Boot Priority / Boot Order], set '50HX Unlock' as the first entry\n"+
 				"   or manually pick the boot device \\EFI\\50HX\\50HXUNLK.EFI\n"+
@@ -760,21 +760,22 @@ func install() {
 	// 2. Secure Boot
 	fmt.Print("[2/8] Secure Boot check ... ")
 	if hxcore.SecureBootOn() {
-		fmt.Println("on!")
-		fmt.Println("[!] When Secure Boot is on, the unsigned EFI (40HXUNLK) will be rejected by firmware.")
-		msgbox("50HX Installer (Secure Boot must be disabled)",
-			"Secure Boot is enabled - the unsigned unlock EFI will be rejected by firmware.\n\n"+
-				"Please reboot, enter the BIOS to disable it, then run this installer:\n"+
-				"  1. Reboot and press Del / F2 (some boards use F1/F10/F12) to enter the BIOS\n"+
-				"  2. Find the Security / Boot / Start tab\n"+
-				"  3. Set Secure Boot to Disabled\n"+
-				"     (if greyed out, first enable CSM / compatibility mode or restore default safe settings)\n"+
-				"  4. Save and exit (F10), then re-run this program\n\n"+
-				"This is required for the unlock: the 50HX unlock EFI has no Microsoft signature.",
-			mbIconError)
-		return
+		_, source, signed, err := loadEFIImage()
+		if err != nil || !signed {
+			fmt.Println("on; a signed EFI is required")
+			msgbox("50HX Installer (signed EFI required)",
+				"Secure Boot is enabled. The selected EFI must be signed by a key trusted in firmware db.\n\n"+
+				"Build the unsigned EFI, sign it with your key, then run:\n"+
+				"  50HXInstaller.exe -efi <signed EFI path>\n\n"+
+				"A file named 50HXUNLK.signed.EFI beside this installer is picked automatically.\n"+
+				"Signing does not enroll the key; complete the one-time firmware db enrollment first.",
+				mbIconError)
+			return
+		}
+		fmt.Printf("on; signed EFI selected from %s (firmware db trust required)\n", source)
+	} else {
+		fmt.Println("disabled / not available (OK)")
 	}
-	fmt.Println("disabled / not available (OK)")
 
 	// 3. Test signing (v2.5 no longer needed - BYOVD pre-signed drivers load in normal mode)
 	fmt.Print("[3/8] Test signing ... ")
@@ -882,7 +883,7 @@ func install() {
 			"  - A black screen / '50HX' text log displayed for about 10-30 seconds is normal (unlock in progress)\n" +
 			"  - After the unlock completes, Windows will boot automatically\n\n" +
 			"If after reboot Windows boots directly without the unlock running, please enter the BIOS (Del/F2):\n" +
-			"  1. Disable Secure Boot (required for the unsigned EFI)\n" +
+			"  1. If Secure Boot is on, confirm the EFI signer is enrolled in firmware db (see README)\n" +
 			"  2. Disable Fast Boot\n" +
 			"  3. Set '50HX Unlock' as the first boot entry\n" +
 			"     (if the list only shows Windows Boot Manager, disable CSM first then re-check)\n"
@@ -2200,8 +2201,8 @@ func status() {
 	if !gpuOK {
 		diag = append(diag, "- 50HX not detected - please confirm the GPU is seated and the driver is installed")
 	}
-	if sb {
-		diag = append(diag, "- Secure Boot is on: enter the BIOS to disable it, otherwise the unlock EFI is rejected")
+	if sb && (!ss0ok || ss0 != 0x88888888) {
+		diag = append(diag, "- Secure Boot is on: the unlock EFI must be signed by a key trusted in firmware db; check the enrolled signer and boot entry")
 	}
 	if ts {
 		diag = append(diag, "- Test signing is on - v2.5 does not need it; run 'bcdedit /set testsigning off' to disable")
@@ -2227,7 +2228,7 @@ func status() {
 		}
 	}
 	msg := "50HX unlock status\n========================\n"
-	msg += fmt.Sprintf("GPU 40HX: %v    Secure Boot: %v\n", map[bool]string{true: "OK", false: "MISSING"}[gpuOK], map[bool]string{true: "ON!", false: "disabled (OK)"}[sb])
+	msg += fmt.Sprintf("GPU 40HX: %v    Secure Boot: %v\n", map[bool]string{true: "OK", false: "MISSING"}[gpuOK], map[bool]string{true: "on", false: "off"}[sb])
 	msg += fmt.Sprintf("Test signing: %v    GSP: %v\n", map[bool]string{true: "ON", false: "OFF"}[ts], map[bool]string{true: "ON", false: "OFF"}[gs])
 	msg += fmt.Sprintf("ThrottleStop: %v  WinRing0: %v\n", map[bool]string{true: "running", false: "stopped"}[tsRun], map[bool]string{true: "running", false: "stopped"}[winringRun])
 	if tsRun && winringRun {

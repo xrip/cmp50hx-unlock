@@ -176,7 +176,8 @@ the previous initramfs; module backups are under
 Notes:
 
 - Secure Boot must be disabled, or the unsigned module will not load (the
-  installer warns).
+  installer warns). This is separate from the EFI unlock app: its signature
+  can be trusted by firmware `db`; see [`efi-unlock/README.md`](efi-unlock/README.md).
 - Tested subsystem boards are `10de:1554` and `1462:371f`; other `10de:1e09`
   boards only get a warning.
 - Ubuntu, Debian, and their derivatives work; Linux Mint is tested.

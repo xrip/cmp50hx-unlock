@@ -38,8 +38,18 @@ func scanStatus() []statusItem {
 	items = append(items, statusItem{"Boot mode", !legacy,
 		map[bool]string{true: "UEFI (OK)", false: "Legacy+MBR — compute unlock unavailable, requires mbr2gpt to convert to GPT"}[legacy]})
 	sbOn := hxcore.SecureBootOn()
-	items = append(items, statusItem{"Secure Boot", !sbOn,
-		map[bool]string{true: "On (must be disabled!)", false: "Off (OK)"}[sbOn]})
+	sbOK := !sbOn
+	sbNote := "Off (OK)"
+	if sbOn {
+		_, _, signed, err := loadEFIImage()
+		if err == nil && signed {
+			sbOK = true
+			sbNote = "On; signed EFI selected (firmware db trust required)"
+		} else {
+			sbNote = "On; selected EFI must be signed with a key in firmware db"
+		}
+	}
+	items = append(items, statusItem{"Secure Boot", sbOK, sbNote})
 	gpuOK := hxcore.FindGPU()
 	items = append(items, statusItem{"50HX card", gpuOK,
 		map[bool]string{true: "Detected (VEN_10DE&DEV_1E09)", false: "Not detected — confirm the card is seated and the driver is installed"}[gpuOK]})
@@ -235,7 +245,7 @@ func (st *guiState) summaryText(items []statusItem) string {
 	}
 	var warns []string
 	if it, ok := m["Secure Boot"]; ok && !it.ok {
-		warns = append(warns, "Secure Boot is on, disable it in the BIOS")
+		warns = append(warns, "Secure Boot is on; sign the EFI and enroll its signer in firmware db")
 	}
 	if it, ok := m["Boot mode"]; ok && !it.ok {
 		warns = append(warns, "Legacy+MBR boot, compute EFI cannot be installed (requires mbr2gpt to convert to GPT)")
@@ -278,7 +288,7 @@ func (st *guiState) envGuide(items []statusItem) string {
 		g = append(g, "· 40HX not detected: ① confirm power and PCIe seating; ② check Device Manager for code 43 (install the driver first); ③ disable CSM in BIOS (pure UEFI), then re-scan")
 	}
 	if it, ok := m["Secure Boot"]; ok && !it.ok {
-		g = append(g, "· Secure Boot is ON: reboot and press Del/F2 to enter BIOS -> Security/Boot -> Secure Boot=Disabled -> F10 to save -> return to the system and re-run this tool")
+		g = append(g, "Secure Boot is ON: sign 50HXUNLK.EFI with your key, enroll its certificate in firmware db, and place 50HXUNLK.signed.EFI beside the installer")
 	}
 	if it, ok := m["Boot mode"]; ok && !it.ok {
 		g = append(g, "· Legacy+MBR boot: there is no EFI partition, so compute unlock cannot be installed -> run as administrator in CMD: mbr2gpt /validate /allowfullos -> mbr2gpt /convert /allowfullos -> reboot into UEFI (disable CSM) -> re-run this tool (full steps in README §2.4)")

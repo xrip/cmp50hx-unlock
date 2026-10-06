@@ -40,7 +40,7 @@ func AnalyzeEfiLog() string {
 		if efiErr != nil {
 			return "  [EFI log] Unlock EFI not deployed / uninstalled (no \\EFI\\50HX\\50HXUNLK.EFI and no 50hx_log.txt on the ESP)\n  Compute staying locked is expected; to unlock compute: in 50HXInstaller.exe tick [Compute EFI Deploy + firmware boot entry] and install"
 		}
-		return "  [EFI log] No 50hx_log.txt on the ESP — EFI may not have run\n  Enter the BIOS: set '50HX Unlock' as the first boot entry or disable Secure Boot"
+		return "  [EFI log] No 50hx_log.txt on the ESP — EFI may not have run\n  Enter the BIOS: set '50HX Unlock' as the first boot entry and, if Secure Boot is on, trust the EFI signer in firmware db"
 	}
 	if efiErr != nil {
 		return "  [EFI log] Note: the 50hx_log.txt at the ESP root is a historical leftover — the unlock EFI is no longer present (uninstalled / never installed)\n  The old log does not reflect the current state; compute being locked is expected, to restore it please reinstall [Compute EFI Deploy + firmware boot entry]"

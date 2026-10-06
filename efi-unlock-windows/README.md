@@ -43,10 +43,55 @@ All required, like the 40HX tool:
 | Setting | Value | Why |
 |---|---|---|
 | Above 4G Decoding | Enabled | payload buffers live >4 GB |
-| Secure Boot | Disabled | the EFI is unsigned |
+| Secure Boot | Off for the default unsigned EFI; on is supported with a signed EFI | signer must be trusted in firmware `db` |
 | CSM | Disabled (pure UEFI) | so the firmware sees the boot entry |
 | Fast Boot | Disabled | otherwise the UEFI step is skipped |
 | Resizable BAR | Auto/Enabled | complements Above 4G |
+
+## Secure Boot
+
+The default EFI image is unsigned. To keep Secure Boot on, sign a copy with
+your own key and enroll its certificate in the firmware signature database
+(`db`). The firmware checks this direct boot entry; a Windows certificate
+store entry or a Linux MOK enrollment alone does not make it trusted.
+
+On Linux, the repository helper signs a copy and keeps the unsigned build.
+It is included beside the EFI in both release packages. From the repository
+root, first enter `efi-unlock/`; in a release package, run it from the folder
+that contains `50HXUNLK.EFI`:
+
+```bash
+sudo sbctl create-keys                 # once, if you do not already have keys
+sudo sbctl enroll-keys --microsoft     # once; keep Microsoft's boot certificates
+sudo bash ./sign-efi.sh
+```
+
+For a source build, run `./build.sh` before signing. Key enrollment may need
+firmware Setup Mode and a confirmation after reboot; do it from Linux with
+UEFI runtime access, then enable Secure Boot in firmware. See the
+[Linux Secure Boot guide](https://github.com/xrip/cmp50hx-unlock/blob/master/efi-unlock/README.md#secure-boot-signing)
+for details.
+
+The helper writes `50HXUNLK.signed.EFI`. After enrolling the signing key in
+firmware `db`, place that file beside `50HXInstaller.exe` or pass it directly:
+
+```bat
+50HXInstaller.exe -efi C:\path\to\50HXUNLK.signed.EFI
+```
+
+On Windows, copy the unsigned `50HXUNLK.EFI` from the release folder to a new
+file, then sign the copy with the Windows SDK `signtool` and a PFX whose
+certificate is enrolled in firmware `db`:
+
+```powershell
+Copy-Item 50HXUNLK.EFI 50HXUNLK.signed.EFI
+signtool sign /f db.pfx /fd SHA256 /p "PFX password" 50HXUNLK.signed.EFI
+```
+
+The installer can confirm that the selected PE image has a signature, but only
+firmware can confirm that its signer is trusted in `db`. Keep Microsoft's
+certificates when enrolling custom keys so Windows Boot Manager can still
+start. The EFI signature does not sign Windows or Linux kernel drivers.
 
 ## Build (on Windows, MSYS2/Ubuntu, or any Go-capable shell)
 

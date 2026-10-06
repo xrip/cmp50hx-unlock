@@ -26,6 +26,7 @@ efi:
 $(PAYLOAD_TGZ): efi
 	rm -rf $(STAGE_DIR); mkdir -p $(STAGE_DIR)
 	cp efi-unlock/install-linux.sh                          $(STAGE_DIR)/install.sh
+	cp efi-unlock/sign-efi.sh                               $(STAGE_DIR)/
 	cp efi-unlock/50HXUNLK.EFI                              $(STAGE_DIR)/
 	sha256sum efi-unlock/50HXUNLK.EFI                       > $(STAGE_DIR)/50HXUNLK.EFI.sha256
 	cp efi-unlock/README.md                                 $(STAGE_DIR)/

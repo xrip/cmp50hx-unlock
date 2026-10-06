@@ -560,7 +560,7 @@ func check() {
 	}
 	w("GPU 40HX: %s   Secure Boot: %s   GSP: %s\n",
 		map[bool]string{true: "✓", false: "✗"}[gpuOK],
-		map[bool]string{true: "On (must be disabled!)", false: "Off (OK)"}[sbOn], gspTxt)
+		map[bool]string{true: "On (EFI signer must be trusted in firmware db)", false: "Off (OK)"}[sbOn], gspTxt)
 	w("Test signing: %s  (not required since v2.5, recommend off)\n",
 		map[bool]string{true: "Enabled", false: "Disabled"}[tsOn])
 	// v2.6.0: boot mode + power settings — Legacy/MBR, Fast Startup, and
@@ -686,9 +686,6 @@ func check() {
 	if !gpuOK {
 		tips = append(tips, "· 40HX not detected: confirm the card is seated and the driver is installed")
 	}
-	if sbOn {
-		tips = append(tips, "· Secure Boot is ON: disable it in the BIOS (otherwise the unlock EFI will be rejected)")
-	}
 	if tsOn {
 		tips = append(tips, "· Test signing is ON (not required since v2.5): run `bcdedit /set testsigning off` to disable it")
 	}
@@ -696,7 +693,7 @@ func check() {
 		tips = append(tips, "· GSP is not enabled: double-click 50HXInstaller.exe -> in ① tick [GSP enable] and click [Install selected components]")
 	}
 	if gpuOK && st.SS0OK && !st.Unlocked {
-		tips = append(tips, "· EFI compute unlock is not in effect (SS0 locked): if the unlock EFI '50HX Unlock' is not deployed / has been uninstalled on this machine, this warning is expected and compute stays locked — to restore it, re-run 50HXInstaller.exe and tick [Compute EFI Deploy + firmware boot entry]; if the EFI is already installed, confirm the boot went through the '50HX Unlock' boot entry / Above 4G is enabled / Secure Boot is off")
+		tips = append(tips, "· EFI compute unlock is not in effect (SS0 locked): if the unlock EFI '50HX Unlock' is not deployed / has been uninstalled on this machine, this warning is expected and compute stays locked — to restore it, re-run 50HXInstaller.exe and tick [Compute EFI Deploy + firmware boot entry]; if the EFI is already installed, confirm the boot went through the '50HX Unlock' boot entry / Above 4G is enabled / Secure Boot trusts the EFI signer in firmware db")
 	}
 	// v2.6.0: four targeted hints for the community's high-frequency root causes
 	if hxcore.FirmwareIsLegacy() {

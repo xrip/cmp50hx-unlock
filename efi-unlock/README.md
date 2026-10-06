@@ -142,10 +142,36 @@ Tested end-to-end on Ubuntu 24.04 (kernel 6.8.0-139) on the .224 host.
 
 - **Above 4G Decoding: on** — all exploit buffers live above 4 GB; without
   it the unlock silently fails after the BAR step.
-- **Secure Boot: off** — the application is unsigned
-  (`mokutil --sb-state`).
+- **Secure Boot: off for the unsigned release EFI**. It can stay on when you
+  sign the EFI and enroll its signer in firmware `db` (see below).
 - **CSM: off** and **Fast Boot: off**.
 - UEFI+GPT boot (an ESP must exist — `/boot/efi` mounted).
+
+### Secure Boot signing
+
+The Secure Boot-off prerequisite above applies only to the unsigned release EFI.
+This app is loaded directly by firmware, so its signer must be trusted in UEFI
+`db`; MOK alone does not trust this direct boot entry.
+
+With sbctl, create and enroll a key once, then build and sign:
+
+```bash
+sudo apt install build-essential gnu-efi mokutil sbsigntool sbctl
+sudo sbctl create-keys                 # once, if you do not already have keys
+sudo sbctl enroll-keys --microsoft     # keep Microsoft's boot certificates
+./build.sh
+sudo bash ./sign-efi.sh
+sudo bash ./install-linux.sh --efi ./50HXUNLK.signed.EFI
+```
+
+Key enrollment may require firmware Setup Mode and a firmware confirmation.
+After enrollment, Secure Boot can stay on. For an existing PEM key pair, use
+`sudo env KEY=/path/db.key CERT=/path/db.pem bash ./sign-efi.sh` instead. The
+installer checks that a signature is present; firmware must trust that signer
+in `db`.
+
+This signs only the EFI app. Optional patched Linux kernel modules are separate
+and still need a kernel-trusted signature (MOK) when Secure Boot is on.
 
 ### 1. Build (on the target host)
 

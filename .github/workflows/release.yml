@@ -38,6 +38,7 @@ jobs:
           cp efi-unlock/50HXUNLK.EFI "$STAGE/"
           cp efi-unlock/50HXUNLK.EFI.sha256 "$STAGE/"
           cp efi-unlock/install-linux.sh "$STAGE/install.sh"
+          cp efi-unlock/sign-efi.sh "$STAGE/"
           cp efi-unlock/README.md "$STAGE/README.md"
           tar -C "$STAGE" -czf cmp50hx-unlock-linux.tar.gz .
           sha256sum cmp50hx-unlock-linux.tar.gz > cmp50hx-unlock-linux.tar.gz.sha256
@@ -62,6 +63,7 @@ jobs:
           diff <(sha256sum < "$D/payload.tar.gz" | cut -d' ' -f1) \
                <(cut -d' ' -f1 cmp50hx-unlock-linux.tar.gz.sha256)
           tar -tzf "$D/payload.tar.gz" | grep -x './install.sh'
+          tar -tzf "$D/payload.tar.gz" | grep -x './sign-efi.sh'
           tar -tzf "$D/payload.tar.gz" | grep -x './50HXUNLK.EFI'
           rm -rf "$D"
 
@@ -189,6 +191,7 @@ jobs:
           Copy-Item -Recurse -Force (Join-Path $W 'efi-unlock-windows\gen2\*') $Stage
           Copy-Item -Force (Join-Path $W 'efi-unlock-windows\README.md') (Join-Path $Stage 'README.md')
           Copy-Item -Force (Join-Path $Tools 'inst50hx\embed\50HXUNLK.EFI') (Join-Path $Stage '50HXUNLK.EFI')
+          Copy-Item -Force (Join-Path $W 'efi-unlock\sign-efi.sh') (Join-Path $Stage 'sign-efi.sh')
           Get-ChildItem $Stage | Format-Table Name,Length
           (Get-FileHash (Join-Path $Stage '50HXInstaller.exe') -Algorithm SHA256).Hash
 
@@ -248,7 +251,10 @@ jobs:
             Both ship the same UEFI compute unlock (FP32 31.7x / DP4A 28.4x
             over the locked stock driver, zero Xid; A/B matrix:
             efi-unlock/runs/20260910-ab-stock-vs-efi.md). Requires UEFI boot
-            with Above 4G Decoding on and Secure Boot off.
+            with Above 4G Decoding on. Secure Boot can stay on: sign the EFI
+            with your key and enroll its signer in firmware `db`; see the
+            Secure Boot section in the included README. Linux kernel module
+            signing is separate from signing the EFI application.
           files: |
             dist/linux/cmp50hx-unlock-linux.run
             dist/linux/cmp50hx-unlock-linux.tar.gz

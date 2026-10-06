@@ -25,12 +25,30 @@ die() { printf '[50hx] ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "run as root (sudo)"
 
+REMOVE=0
 FB_20G=0
-if [[ " $* " == *" --fb-20g "* ]]; then FB_20G=1; fi
+EFI_OVERRIDE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --remove) REMOVE=1; shift ;;
+        --fb-20g) FB_20G=1; shift ;;
+        --efi)
+            [[ $# -ge 2 ]] || die "--efi requires a file path"
+            EFI_OVERRIDE="$2"
+            shift 2 ;;
+        -h|--help)
+            echo "usage: bash install-linux.sh [--fb-20g] [--efi SIGNED.EFI] [--remove]"
+            exit 0 ;;
+        *) die "unknown option: $1" ;;
+    esac
+done
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EFI_FILE="$SELF_DIR/$EFI_NAME"
-[[ -f "$EFI_FILE" ]] || die "$EFI_NAME not found next to this script"
+[[ -n "$EFI_OVERRIDE" ]] && EFI_FILE="$EFI_OVERRIDE"
+if [[ $REMOVE -eq 0 ]]; then
+    [[ -f "$EFI_FILE" ]] || die "EFI file not found: $EFI_FILE"
+fi
 
 for cmd in efibootmgr mountpoint findmnt; do
     command -v "$cmd" >/dev/null || die "missing command: $cmd (apt install efibootmgr util-linux)"
@@ -78,13 +96,21 @@ remove_entry() {
 }
 
 # --- removal mode ------------------------------------------------------
-if [[ "${1:-}" == "--remove" ]]; then
+if [[ $REMOVE -eq 1 ]]; then
     ESP_MNT="$(find_esp || true)"
     if [[ -z "$ESP_MNT" ]]; then
         die "ESP not mounted; mount it and retry"
     fi
     remove_entry
     exit 0
+fi
+
+command -v mokutil >/dev/null || die "missing mokutil (apt install mokutil)"
+secure_boot_status="$(mokutil --sb-state 2>/dev/null || true)"
+if grep -Eiq 'SecureBoot[[:space:]]+enabled|Secure Boot enabled' <<<"$secure_boot_status"; then
+    command -v sbverify >/dev/null || die "Secure Boot is on; install sbsigntool to check the EFI signature"
+    sbverify --list "$EFI_FILE" >/dev/null 2>&1 || die "Secure Boot is on but $EFI_FILE is unsigned. Sign it with sign-efi.sh and use --efi. The signer certificate must be enrolled in firmware db."
+    say "Secure Boot is enabled; the selected EFI has a signature. Firmware must trust its certificate in UEFI db"
 fi
 
 ESP_MNT="$(find_esp || true)"
