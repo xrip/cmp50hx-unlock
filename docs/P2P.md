@@ -12,8 +12,14 @@ size stays controlled by cmp50_rebar_size: selector 8 gives 16 GiB and
 selector 9 gives 32 GiB when the card supports it. The RTX 2080 Ti
 patch sets tu102_bar1_size to 9 by default.
 
-The upstream issue report is hardware-verified. This repository's patch
-integration has not been tested on local hardware.
+The upstream issue report is hardware-verified. On 2026-10-06, this repo's
+build was installed on Ubuntu 24.04.4 with kernel 6.8.0-139-generic and
+two 20 GiB CMP 50HX cards. nvidia-smi topo -p2p r and -p2p w reported
+OK for both GPU directions.
+
+This checks the driver's P2P capability report; no CUDA transfer benchmark
+was run. On this host, booting with intel_iommu=on iommu=pt made GSP startup
+fail. The prior mitigations=off boot line was restored.
 
 Kernel command line used:
 
