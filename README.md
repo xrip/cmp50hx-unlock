@@ -83,6 +83,35 @@ The packed values are used by RM/GSP code. The Linux module uses the split
 vendor, device, and subsystem fields. The two forms must not be mixed when a
 new patch is made.
 
+## Kernel API compatibility
+
+Kernel-version compatibility is maintained separately from CMP50HX features.
+`patches/cmp50hx/` contains card-specific changes. The shared compatibility
+patch is `patches/common/01-nvidia-kernel-string-api.patch`; `build.sh` applies
+it after the selected card patch series.
+
+The patch updates string-copy code in these NVIDIA Open `610.43.03` source
+files:
+
+| Source file | Change |
+| --- | --- |
+| `kernel-open/nvidia/os-interface.c` | Use `strscpy` for the current process name. |
+| `kernel-open/nvidia/linux_nvswitch.c` | Use bounded `memcpy` for the fixed-length registry value and `strscpy_pad` in the string wrapper. |
+| `kernel-open/nvidia-uvm/uvm_pmm_gpu.c` | Use `strscpy` for the UVM chunk name. |
+| `kernel-open/nvidia-modeset/nvidia-modeset-linux.c` | Use `strscpy_pad` in the modeset string wrapper. |
+
+The same patch is applied unchanged for each kernel build.
+
+| Kernel | Build result |
+| --- | --- |
+| `6.8.0-139-generic` | All five NVIDIA modules built. |
+| `7.2.9-cmp50hx` | `nvidia`, `nvidia-uvm`, `nvidia-modeset`, and `nvidia-peermem` built. |
+
+These results cover only the listed kernel releases. On `7.2.9-cmp50hx`,
+`nvidia-drm.ko` was omitted because NVIDIA `610.43.03` uses DRM atomic APIs
+that do not match this kernel's API; the shared string compatibility patch
+does not address that separate issue.
+
 ## CUDA kernel profiling
 
 The driver build series includes `08-cmp50-driver-profiling.patch`. For the
