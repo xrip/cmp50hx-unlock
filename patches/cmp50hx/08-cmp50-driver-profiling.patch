@@ -1,10 +1,7 @@
 diff --git a/src/nvidia/src/kernel/gpu/gpu.c b/src/nvidia/src/kernel/gpu/gpu.c
 --- a/src/nvidia/src/kernel/gpu/gpu.c
 +++ b/src/nvidia/src/kernel/gpu/gpu.c
-@@ -838,4 +838,11 @@ _gpuInitChipInfo
-     pGpu->chipInfo.subRevision  = pGpu->pChipInfo->chipSubRev;
-     pGpu->idInfo.PCIDeviceID    = pGpu->pChipInfo->pciDeviceId;
-     pGpu->idInfo.PCISubDeviceID = pGpu->pChipInfo->pciSubDeviceId;
+@@ -912,1 +912,8 @@ _gpuInitChipInfo
      pGpu->idInfo.PCIRevisionID  = pGpu->pChipInfo->pciRevisionId;
 +
 +    if ((pGpu->idInfo.PCIDeviceID == 0x1E0910DEU) &&
