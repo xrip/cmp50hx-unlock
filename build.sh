@@ -107,6 +107,12 @@ for patch_name in "${patch_order[@]}"; do
     }
     patch_files+=("${patch_file}")
 done
+common_patch_file="${script_dir}/patches/common/01-nvidia-kernel-string-api.patch"
+[[ -f "${common_patch_file}" ]] || {
+    printf 'missing common patch: %s\n' "${common_patch_file}" >&2
+    exit 5
+}
+patch_files+=("${common_patch_file}")
 [[ ! -e "${artifact_dir}" ]] || {
     printf 'artifact directory already exists: %s\n' "${artifact_dir}" >&2
     exit 10

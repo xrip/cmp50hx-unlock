@@ -1,0 +1,44 @@
+diff --git a/kernel-open/nvidia/os-interface.c b/kernel-open/nvidia/os-interface.c
+--- a/kernel-open/nvidia/os-interface.c
++++ b/kernel-open/nvidia/os-interface.c
+@@ -26,4 +26,5 @@
+ #include "os-interface.h"
+ #include "nv-linux.h"
++#include <linux/string.h>
+ #include <linux/iommu.h>
+ #include "nv-caps-imex.h"
+@@ -770,7 +771,6 @@
+ void NV_API_CALL os_get_current_process_name(char *buf, NvU32 len)
+ {
+     task_lock(current);
+-    strncpy(buf, current->comm, len - 1);
+-    buf[len - 1] = '\0';
++    strscpy(buf, current->comm, len);
+     task_unlock(current);
+ }
+diff --git a/kernel-open/nvidia/linux_nvswitch.c b/kernel-open/nvidia/linux_nvswitch.c
+--- a/kernel-open/nvidia/linux_nvswitch.c
++++ b/kernel-open/nvidia/linux_nvswitch.c
+@@ -2062,1 +2062,1 @@
+-    strncpy(regkey_val, regkey_val_start, regkey_val_len);
++    memcpy(regkey_val, regkey_val_start, regkey_val_len);
+@@ -2417,1 +2417,2 @@
+-    return strncpy(dest, src, length);
++    strscpy_pad(dest, src, length);
++    return dest;
+diff --git a/kernel-open/nvidia-uvm/uvm_pmm_gpu.c b/kernel-open/nvidia-uvm/uvm_pmm_gpu.c
+--- a/kernel-open/nvidia-uvm/uvm_pmm_gpu.c
++++ b/kernel-open/nvidia-uvm/uvm_pmm_gpu.c
+@@ -164,1 +164,2 @@
++#include <linux/string.h>
+ #include "uvm_common.h"
+@@ -2807,1 +2808,1 @@
+-                strncpy(chunk_split_cache[level].name, "uvm_gpu_chunk_t", sizeof(chunk_split_cache[level].name) - 1);
++                strscpy(chunk_split_cache[level].name, "uvm_gpu_chunk_t", sizeof(chunk_split_cache[level].name));
+diff --git a/kernel-open/nvidia-modeset/nvidia-modeset-linux.c b/kernel-open/nvidia-modeset/nvidia-modeset-linux.c
+--- a/kernel-open/nvidia-modeset/nvidia-modeset-linux.c
++++ b/kernel-open/nvidia-modeset/nvidia-modeset-linux.c
+@@ -669,1 +669,2 @@
+-    return strncpy(dest, src, n);
++    strscpy_pad(dest, src, n);
++    return dest;
