@@ -1,0 +1,12 @@
+--- a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c
++++ b/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c
+@@ -380,7 +380,8 @@
+              * still requires stock GSP-RM startup and full issue-rate gates.
+              */
+             ((mailbox1 == 0U) || (mailbox1 == 1U) ||
+-             (mailbox1 == 4U)))
++             (mailbox1 == 4U) ||
++             (mailbox1 == NvU64_HI32(sysmemAddrOfData))))
+         {
+             if (mailbox1 != 0U)
+             {
