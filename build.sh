@@ -73,6 +73,7 @@ case "${card}" in
             06-aikitoria-p2p.patch
             07-turing-p2p.patch
             08-cmp50-driver-profiling.patch
+            09-cmp50-mailbox-high-address.patch
         )
         ;;
     *)
